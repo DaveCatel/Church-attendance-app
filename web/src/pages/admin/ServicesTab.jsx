@@ -1,0 +1,337 @@
+import { useCallback, useEffect, useState } from 'react'
+import { api } from '../../api'
+import { DAYS, dayLabelYear } from '../../format'
+
+const EMPTY = {
+  name: '',
+  description: '',
+  service_type: 'SERVICE',
+  is_recurring: true,
+  day_of_week: 6,
+  start_time: '09:00',
+  end_time: '11:00',
+  start_date: '',
+  end_date: '',
+  department_ids: [],
+}
+
+const hhmm = (t) => (t ? t.slice(0, 5) : '')
+
+// the form values that match an existing service (used to pre-fill the edit form)
+const fromService = (s) => ({
+  name: s.name,
+  description: s.description || '',
+  service_type: s.service_type,
+  is_recurring: s.is_recurring,
+  day_of_week: s.day_of_week ?? 6,
+  start_time: hhmm(s.default_start_time),
+  end_time: hhmm(s.default_end_time),
+  start_date: s.first_date || '',
+  end_date: s.last_date || '',
+  department_ids: s.department_ids || [],
+})
+
+// One form for both creating (no `service`) and editing (`service` given).
+function ServiceForm({ service, departments, onSaved, onCancel }) {
+  const editing = !!service
+  const initial = editing ? fromService(service) : EMPTY
+  const [f, setF] = useState(initial)
+  const [restrict, setRestrict] = useState(initial.department_ids.length > 0) // who may attend
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+
+  const sameIds = (a, b) => a.length === b.length && a.every((id) => b.includes(id))
+
+  function toggleDepartment(id) {
+    setF((cur) => ({
+      ...cur,
+      department_ids: cur.department_ids.includes(id)
+        ? cur.department_ids.filter((x) => x !== id)
+        : [...cur.department_ids, id],
+    }))
+  }
+
+  function createBody() {
+    const body = {
+      department_ids: restrict ? f.department_ids : [],
+      name: f.name,
+      description: f.description || null,
+      service_type: f.service_type,
+      is_recurring: f.is_recurring,
+      start_time: f.start_time,
+      end_time: f.end_time || null,
+    }
+    if (f.is_recurring) body.day_of_week = Number(f.day_of_week)
+    else {
+      body.start_date = f.start_date || null
+      body.end_date = f.end_date || null
+    }
+    return body
+  }
+
+  // only send what changed, so an untouched schedule is never regenerated
+  function editBody() {
+    const body = {}
+    if (f.name.trim() !== initial.name) body.name = f.name.trim()
+    if (f.description !== initial.description) body.description = f.description || null
+    if (f.service_type !== initial.service_type) body.service_type = f.service_type
+    if (f.start_time !== initial.start_time) body.start_time = f.start_time
+    if (f.end_time !== initial.end_time) body.end_time = f.end_time || null
+    const ids = restrict ? f.department_ids : []
+    if (!sameIds(ids, initial.department_ids)) body.department_ids = ids
+    if (f.is_recurring) {
+      if (Number(f.day_of_week) !== Number(initial.day_of_week)) body.day_of_week = Number(f.day_of_week)
+    } else if (f.start_date !== initial.start_date || f.end_date !== initial.end_date) {
+      body.start_date = f.start_date
+      body.end_date = f.end_date || f.start_date
+    }
+    return body
+  }
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    if (restrict && f.department_ids.length === 0) {
+      return setError('Pick at least one department, or choose "Everyone".')
+    }
+    let body
+    if (editing) {
+      body = editBody()
+      if (Object.keys(body).length === 0) return onCancel()
+    } else {
+      body = createBody()
+    }
+    setBusy(true)
+    try {
+      await api(editing ? `/services/${service.id}` : '/services', { method: editing ? 'PATCH' : 'POST', body })
+      if (!editing) {
+        setF(EMPTY)
+        setRestrict(false)
+      }
+      onSaved()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className={editing ? 'edit-form' : 'card'} onSubmit={submit}>
+      <h3>{editing ? `Edit ${service.name}` : 'Create a service or event'}</h3>
+      <label>
+        Name
+        <input value={f.name} onChange={set('name')} placeholder="Sunday Service, Youth Conference…" required />
+      </label>
+      <label>
+        Description (optional)
+        <input value={f.description} onChange={set('description')} />
+      </label>
+      <div className="row">
+        <label>
+          Type
+          <select value={f.service_type} onChange={set('service_type')}>
+            <option value="SERVICE">Service</option>
+            <option value="MEETING">Meeting</option>
+            <option value="EVENT">Event / conference</option>
+          </select>
+        </label>
+        {editing ? (
+          <label>
+            Repeats
+            <input value={f.is_recurring ? 'Every week' : 'One-off event'} disabled />
+          </label>
+        ) : (
+          <label>
+            Repeats
+            <select
+              value={f.is_recurring ? 'weekly' : 'once'}
+              onChange={(e) => setF({ ...f, is_recurring: e.target.value === 'weekly' })}
+            >
+              <option value="weekly">Every week</option>
+              <option value="once">One-off (one or more days)</option>
+            </select>
+          </label>
+        )}
+      </div>
+
+      {f.is_recurring ? (
+        <label>
+          Day of the week
+          <select value={f.day_of_week} onChange={set('day_of_week')}>
+            {DAYS.map((d, i) => (
+              <option key={d} value={i}>{d}</option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <div className="row">
+          <label>
+            First day
+            <input type="date" value={f.start_date} onChange={set('start_date')} required />
+          </label>
+          <label>
+            Last day (optional)
+            <input type="date" value={f.end_date} min={f.start_date} onChange={set('end_date')} />
+          </label>
+        </div>
+      )}
+
+      <div className="row">
+        <label>
+          Starts
+          <input type="time" value={f.start_time} onChange={set('start_time')} required />
+        </label>
+        <label>
+          Ends
+          <input type="time" value={f.end_time} onChange={set('end_time')} />
+        </label>
+      </div>
+      <fieldset className="who">
+        <legend>Who can attend</legend>
+        <label className="check-item">
+          <input type="radio" name={`who-${service?.id || 'new'}`} checked={!restrict} onChange={() => setRestrict(false)} />
+          <span>Everyone</span>
+        </label>
+        <label className="check-item">
+          <input type="radio" name={`who-${service?.id || 'new'}`} checked={restrict} onChange={() => setRestrict(true)} />
+          <span>Only members of selected departments</span>
+        </label>
+        {restrict && (
+          <div className="check-list">
+            {departments.length === 0 && (
+              <span className="muted small">No departments yet. Create some in the Departments tab first.</span>
+            )}
+            {departments.map((d) => (
+              <label className="check-item" key={d.id}>
+                <input type="checkbox" checked={f.department_ids.includes(d.id)} onChange={() => toggleDepartment(d.id)} />
+                <span>
+                  {d.name}
+                  {!d.is_active && <span className="muted"> (inactive)</span>}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+        {restrict && <p className="muted small">Only approved members of these departments will see this service and be able to clock in.</p>}
+      </fieldset>
+      {editing && (
+        <p className="muted small">
+          Changes to the day or time apply to upcoming sessions nobody has clocked in to yet. Past
+          sessions and their attendance stay as they were.
+        </p>
+      )}
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        <button className="btn btn-primary" disabled={busy}>
+          {busy ? 'Saving…' : editing ? 'Save changes' : 'Create'}
+        </button>
+        {editing && (
+          <button className="btn btn-ghost" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+      </div>
+    </form>
+  )
+}
+
+export default function ServicesTab() {
+  const [services, setServices] = useState(null)
+  const [departments, setDepartments] = useState([])
+  const [editingId, setEditingId] = useState(null)
+  const [error, setError] = useState('')
+
+  const load = useCallback(() => {
+    api('/services').then(setServices).catch((e) => setError(e.message))
+  }, [])
+  useEffect(load, [load])
+  useEffect(() => {
+    api('/departments/admin').then(setDepartments).catch(() => {})
+  }, [])
+
+  const who = (s) => {
+    if (!s.department_ids?.length) return 'Open to everyone'
+    const names = s.department_ids.map((id) => departments.find((d) => d.id === id)?.name).filter(Boolean)
+    return `${names.join(', ') || 'Selected departments'} only`
+  }
+
+  async function toggle(s) {
+    setError('')
+    try {
+      await api(`/services/${s.id}`, { method: 'PATCH', body: { is_active: !s.is_active } })
+      load()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function remove(s) {
+    if (!window.confirm(`Delete "${s.name}"? This cannot be undone.`)) return
+    setError('')
+    try {
+      await api(`/services/${s.id}`, { method: 'DELETE' })
+      load()
+    } catch (e) {
+      setError(e.message) // e.g. it has attendance history: the message says to deactivate instead
+    }
+  }
+
+  const when = (s) =>
+    s.is_recurring
+      ? `Every ${DAYS[s.day_of_week]}`
+      : s.first_date && s.last_date && s.first_date !== s.last_date
+        ? `${dayLabelYear(s.first_date)} – ${dayLabelYear(s.last_date)}`
+        : s.first_date
+          ? dayLabelYear(s.first_date)
+          : 'One-off event'
+
+  return (
+    <>
+      <ServiceForm departments={departments} onSaved={load} />
+      <h2>All services</h2>
+      {error && <p className="error">{error}</p>}
+      {services && services.length === 0 && <p className="card muted">Nothing yet. Create your first service above.</p>}
+      {services && services.length > 0 && (
+        <ul className="card list">
+          {services.map((s) =>
+            editingId === s.id ? (
+              <li key={s.id} className="edit-row">
+                <ServiceForm
+                  service={s}
+                  departments={departments}
+                  onSaved={() => {
+                    setEditingId(null)
+                    load()
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              </li>
+            ) : (
+              <li key={s.id} className={s.is_active ? '' : 'inactive'}>
+                <span>
+                  <strong>{s.name}</strong>
+                  <span className="muted">
+                    {' '}· {when(s)} · {s.default_start_time?.slice(0, 5)}
+                    {s.default_end_time ? `–${s.default_end_time.slice(0, 5)}` : ''}
+                    {!s.is_active ? ' · Inactive' : ''}
+                  </span>
+                  <br />
+                  <span className="muted small">{who(s)}</span>
+                </span>
+                <span className="actions">
+                  <button className="btn btn-ghost" onClick={() => setEditingId(s.id)}>Edit</button>
+                  <button className="btn btn-ghost" onClick={() => toggle(s)}>
+                    {s.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                  <button className="btn btn-ghost danger-text" onClick={() => remove(s)}>Delete</button>
+                </span>
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+    </>
+  )
+}

@@ -1,0 +1,127 @@
+import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
+
+
+class AttendanceRecord(
+    UUIDPrimaryKeyMixin,
+    TimestampMixin,
+    Base,
+):
+    __tablename__ = "attendance_records"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    service_occurrence_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "service_occurrences.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+
+    device_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "user_devices.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+
+    clock_in: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    clock_out: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    clock_in_source: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+    )
+
+    clock_out_source: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    clock_in_device_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    clock_out_device_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    clock_in_server_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    clock_out_server_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    sync_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="SYNCED",
+    )
+
+    user = relationship(
+        "User",
+        back_populates="attendance_records",
+    )
+
+    service_occurrence = relationship(
+        "ServiceOccurrence",
+        back_populates="attendance_records",
+    )
+
+    device = relationship(
+        "UserDevice",
+        back_populates="attendance_records",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "service_occurrence_id",
+            name="uq_attendance_user_occurrence",
+        ),
+        Index(
+            "ix_attendance_user_id",
+            "user_id",
+        ),
+        Index(
+            "ix_attendance_occurrence_id",
+            "service_occurrence_id",
+        ),
+        Index(
+            "ix_attendance_clock_in",
+            "clock_in",
+        ),
+    )

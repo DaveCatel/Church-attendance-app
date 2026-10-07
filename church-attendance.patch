@@ -1,0 +1,1806 @@
+diff -ruN a/backend/.env.example b/backend/.env.example
+--- a/backend/.env.example	2026-10-07 08:35:31.058471477 +0000
++++ b/backend/.env.example	2026-10-07 08:35:31.059723780 +0000
+@@ -2,4 +2,3 @@
+ # generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+ SECRET_KEY=change-me
+ CORS_ORIGINS=["http://localhost:5173"]
+-Dom-chu-rbf
+diff -ruN a/backend/app/main.py b/backend/app/main.py
+--- a/backend/app/main.py	2026-10-07 08:35:31.063870587 +0000
++++ b/backend/app/main.py	2026-10-07 08:35:31.065007310 +0000
+@@ -5,7 +5,7 @@
+ from fastapi.staticfiles import StaticFiles
+ 
+ from app.core.config import settings
+-from app.routers import attendance, auth, services, users
++from app.routers import attendance, auth, departments, services, users
+ 
+ app = FastAPI(title="Church Attendance API")
+ 
+@@ -17,7 +17,13 @@
+     allow_headers=["*"],
+ )
+ 
+-for router in (auth.router, users.router, attendance.router, services.router):
++for router in (
++    auth.router,
++    users.router,
++    attendance.router,
++    services.router,
++    departments.router,
++):
+     app.include_router(router, prefix="/api")
+ 
+ Path(settings.MEDIA_DIR, "avatars").mkdir(parents=True, exist_ok=True)
+diff -ruN a/backend/app/routers/services.py b/backend/app/routers/services.py
+--- a/backend/app/routers/services.py	2026-10-07 08:35:31.069001154 +0000
++++ b/backend/app/routers/services.py	2026-10-07 08:35:31.070382726 +0000
+@@ -1,15 +1,24 @@
+ import uuid
+ from datetime import date, datetime, timedelta
+ 
+-from fastapi import APIRouter, Depends, HTTPException
++from fastapi import APIRouter, Depends, HTTPException, Query, Response
+ from sqlalchemy import func, select
+ from sqlalchemy.orm import Session
+ 
+ from app.db.database import get_db
+ from app.deps import require_admin
+-from app.models import AttendanceRecord, ServiceOccurrence, ServiceTemplate, User
++from app.models import (
++    AttendanceRecord,
++    Department,
++    ServiceOccurrence,
++    ServiceParticipant,
++    ServiceTemplate,
++    User,
++)
+ from app.schemas import (
+     AttendeeOut,
++    MemberAttendanceOut,
++    MemberAttendanceReport,
+     OccurrenceAdminOut,
+     ServiceCreate,
+     ServiceOut,
+@@ -20,13 +29,161 @@
+ router = APIRouter(prefix="/services", tags=["services (admin)"])
+ 
+ 
++# ---------- helpers ----------
++def _owned_service(db: Session, admin: User, service_id: uuid.UUID) -> ServiceTemplate:
++    template = db.get(ServiceTemplate, service_id)
++    if template is None or template.church_id != admin.church_id:
++        raise HTTPException(404, "Service not found")
++    return template
++
++
++def _service_views(db: Session, templates: list[ServiceTemplate]) -> list[ServiceOut]:
++    """ServiceOut for each template, plus its date span and total clock-ins."""
++    ids = [t.id for t in templates]
++    spans: dict[uuid.UUID, tuple[date, date]] = {}
++    counts: dict[uuid.UUID, int] = {}
++    restricted: dict[uuid.UUID, list[uuid.UUID]] = {}
++    if ids:
++        for tid, did in db.execute(
++            select(ServiceParticipant.service_template_id, ServiceParticipant.department_id).where(
++                ServiceParticipant.service_template_id.in_(ids),
++                ServiceParticipant.department_id.is_not(None),
++            )
++        ):
++            restricted.setdefault(tid, []).append(did)
++        for tid, first, last in db.execute(
++            select(
++                ServiceOccurrence.service_template_id,
++                func.min(ServiceOccurrence.service_date),
++                func.max(ServiceOccurrence.service_date),
++            )
++            .where(ServiceOccurrence.service_template_id.in_(ids))
++            .group_by(ServiceOccurrence.service_template_id)
++        ):
++            spans[tid] = (first, last)
++        for tid, n in db.execute(
++            select(ServiceOccurrence.service_template_id, func.count(AttendanceRecord.id))
++            .select_from(ServiceOccurrence)
++            .join(AttendanceRecord, AttendanceRecord.service_occurrence_id == ServiceOccurrence.id)
++            .where(ServiceOccurrence.service_template_id.in_(ids))
++            .group_by(ServiceOccurrence.service_template_id)
++        ):
++            counts[tid] = n
++    views = []
++    for t in templates:
++        out = ServiceOut.model_validate(t)
++        if not t.is_recurring and t.id in spans:
++            out.first_date, out.last_date = spans[t.id]
++        out.attendance_count = counts.get(t.id, 0)
++        out.department_ids = restricted.get(t.id, [])
++        views.append(out)
++    return views
++
++
++def _set_departments(
++    db: Session, church_id: uuid.UUID, template: ServiceTemplate, department_ids: list[uuid.UUID]
++) -> None:
++    """Replace the departments this service is restricted to ([] = open to everyone).
++    Rows that name individual people are left alone."""
++    wanted = list(dict.fromkeys(department_ids))
++    if wanted:
++        found = set(
++            db.scalars(
++                select(Department.id).where(
++                    Department.id.in_(wanted), Department.church_id == church_id
++                )
++            )
++        )
++        if len(found) != len(wanted):
++            raise HTTPException(400, "One of the selected departments does not exist")
++    current = {
++        p.department_id: p
++        for p in db.scalars(
++            select(ServiceParticipant).where(
++                ServiceParticipant.service_template_id == template.id,
++                ServiceParticipant.department_id.is_not(None),
++            )
++        )
++    }
++    for did, row in current.items():
++        if did not in wanted:
++            db.delete(row)
++    for did in wanted:
++        if did not in current:
++            db.add(ServiceParticipant(service_template_id=template.id, department_id=did))
++
++
++def _attended_ids(db: Session, occurrence_ids: list[uuid.UUID]) -> set[uuid.UUID]:
++    if not occurrence_ids:
++        return set()
++    return set(
++        db.scalars(
++            select(AttendanceRecord.service_occurrence_id).where(
++                AttendanceRecord.service_occurrence_id.in_(occurrence_ids)
++            )
++        )
++    )
++
++
++def _drop_unattended_upcoming(db: Session, template: ServiceTemplate, today: date) -> None:
++    """Weekly service whose schedule changed: remove today's and later sessions nobody has
++    clocked in to; ensure_occurrences then recreates them with the new day and time."""
++    occs = db.scalars(
++        select(ServiceOccurrence).where(
++            ServiceOccurrence.service_template_id == template.id,
++            ServiceOccurrence.service_date >= today,
++        )
++    ).all()
++    attended = _attended_ids(db, [o.id for o in occs])
++    for o in occs:
++        if o.id not in attended:
++            db.delete(o)
++
++
++def _resync_event(db: Session, template: ServiceTemplate, data: dict, tz, today: date) -> None:
++    """One-off event: apply a new date range and/or new times to its sessions."""
++    occs = db.scalars(
++        select(ServiceOccurrence).where(ServiceOccurrence.service_template_id == template.id)
++    ).all()
++    have = {o.service_date: o for o in occs}
++    attended = _attended_ids(db, [o.id for o in occs])
++
++    wanted = set(have)
++    if ("start_date" in data or "end_date" in data) and have:
++        first = data.get("start_date") or min(have)
++        last = (data["end_date"] or first) if "end_date" in data else max(have)
++        if last < first:
++            raise HTTPException(400, "End date must not be before the start date")
++        if (last - first).days > 30:
++            raise HTTPException(400, "An event can span at most 31 days")
++        wanted = {first + timedelta(days=i) for i in range((last - first).days + 1)}
++        for day, o in have.items():
++            if day not in wanted and o.id in attended:
++                raise HTTPException(
++                    409, f"People already clocked in on {day:%d %b %Y}, so that day cannot be removed"
++                )
++        for day, o in have.items():
++            if day not in wanted:
++                db.delete(o)
++        for day in sorted(wanted - set(have)):
++            db.add(build_occurrence(template, day, tz))
++
++    # new times for the sessions that are still to come and have no attendance yet
++    for day, o in have.items():
++        if day in wanted and day >= today and o.id not in attended:
++            fresh = build_occurrence(template, day, tz)
++            o.start_time, o.end_time = fresh.start_time, fresh.end_time
++
++
++# ---------- services: CRUD ----------
+ @router.get("", response_model=list[ServiceOut])
+ def list_services(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+-    return db.scalars(
++    templates = db.scalars(
+         select(ServiceTemplate)
+         .where(ServiceTemplate.church_id == admin.church_id)
+         .order_by(ServiceTemplate.created_at.desc())
+     ).all()
++    return _service_views(db, list(templates))
+ 
+ 
+ @router.post("", response_model=ServiceOut, status_code=201)
+@@ -48,6 +205,7 @@
+     )
+     db.add(template)
+     db.flush()
++    _set_departments(db, church.id, template, body.department_ids)
+ 
+     if not body.is_recurring:
+         day = body.start_date
+@@ -59,13 +217,103 @@
+     if body.is_recurring:
+         today = datetime.now(tz).date()
+         ensure_occurrences(db, church, today, today + timedelta(days=14))
+-    return template
++    return _service_views(db, [template])[0]
++
++
++@router.patch("/{service_id}", response_model=ServiceOut)
++def update_service(
++    service_id: uuid.UUID,
++    body: ServiceUpdate,
++    admin: User = Depends(require_admin),
++    db: Session = Depends(get_db),
++):
++    template = _owned_service(db, admin, service_id)
++    data = body.model_dump(exclude_unset=True)
++    for field in ("name", "service_type", "start_time", "is_active"):
++        if field in data and data[field] is None:
++            raise HTTPException(422, f"{field} cannot be empty")
++
++    tz = church_tz(admin.church)
++    today = datetime.now(tz).date()
+ 
++    if "name" in data:
++        name = data["name"].strip()
++        if not name:
++            raise HTTPException(422, "Give the service a name")
++        template.name = name
++    if "description" in data:
++        template.description = (data["description"] or "").strip() or None
++    if "service_type" in data:
++        template.service_type = data["service_type"]
++    if "is_active" in data:
++        template.is_active = data["is_active"]
++
++    # schedule
++    if "day_of_week" in data:
++        if not template.is_recurring:
++            raise HTTPException(400, "Only weekly services have a day of the week")
++        if data["day_of_week"] is None:
++            raise HTTPException(422, "Pick the day of the week")
++    if template.is_recurring and ("start_date" in data or "end_date" in data):
++        raise HTTPException(400, "Dates only apply to one-off events")
++
++    start = data.get("start_time", template.default_start_time)
++    end = data["end_time"] if "end_time" in data else template.default_end_time
++    if end is not None and end <= start:
++        raise HTTPException(400, "End time must be after start time")
+ 
++    if data.get("department_ids") is not None:
++        _set_departments(db, admin.church_id, template, data["department_ids"])
++
++    schedule_changed = bool(
++        {"day_of_week", "start_time", "end_time", "start_date", "end_date"} & data.keys()
++    )
++    if schedule_changed:
++        template.default_start_time = start
++        template.default_end_time = end
++        if "day_of_week" in data:
++            template.day_of_week = data["day_of_week"]
++        if template.is_recurring:
++            _drop_unattended_upcoming(db, template, today)
++        else:
++            _resync_event(db, template, data, tz, today)
++    db.commit()
++
++    if schedule_changed and template.is_recurring and template.is_active:
++        ensure_occurrences(db, admin.church, today, today + timedelta(days=14))
++    return _service_views(db, [template])[0]
++
++
++@router.delete("/{service_id}", status_code=204)
++def delete_service(
++    service_id: uuid.UUID, admin: User = Depends(require_admin), db: Session = Depends(get_db)
++):
++    template = _owned_service(db, admin, service_id)
++    recorded = db.scalar(
++        select(func.count(AttendanceRecord.id))
++        .select_from(AttendanceRecord)
++        .join(ServiceOccurrence, ServiceOccurrence.id == AttendanceRecord.service_occurrence_id)
++        .where(ServiceOccurrence.service_template_id == template.id)
++    )
++    if recorded:
++        # deleting would wipe the attendance history, so only unused services can go
++        raise HTTPException(
++            409,
++            f"This service has {recorded} attendance record(s). "
++            "Deactivate it instead so the history is kept.",
++        )
++    db.delete(template)
++    db.commit()
++    return Response(status_code=204)
++
++
++# ---------- attendance: who came ----------
+ @router.get("/occurrences", response_model=list[OccurrenceAdminOut])
+ def list_occurrences(
+     date_from: date | None = None,
+     date_to: date | None = None,
++    service_id: uuid.UUID | None = None,
++    limit: int = Query(300, ge=1, le=1000),
+     admin: User = Depends(require_admin),
+     db: Session = Depends(get_db),
+ ):
+@@ -74,8 +322,10 @@
+     ensure_occurrences(db, admin.church, today, today + timedelta(days=30))
+     date_from = date_from or today - timedelta(days=30)
+     date_to = date_to or today + timedelta(days=30)
++    if date_from > date_to:
++        raise HTTPException(400, "The start date is after the end date")
+ 
+-    rows = db.execute(
++    stmt = (
+         select(ServiceOccurrence, ServiceTemplate.name, func.count(AttendanceRecord.id))
+         .join(ServiceTemplate, ServiceTemplate.id == ServiceOccurrence.service_template_id)
+         .outerjoin(
+@@ -87,7 +337,11 @@
+         )
+         .group_by(ServiceOccurrence.id, ServiceTemplate.name)
+         .order_by(ServiceOccurrence.start_time.desc())
+-    ).all()
++        .limit(limit)
++    )
++    if service_id is not None:
++        stmt = stmt.where(ServiceTemplate.id == service_id)
++    rows = db.execute(stmt).all()
+     return [
+         OccurrenceAdminOut(
+             id=o.id,
+@@ -132,21 +386,65 @@
+     ]
+ 
+ 
+-@router.patch("/{service_id}", response_model=ServiceOut)
+-def update_service(
+-    service_id: uuid.UUID,
+-    body: ServiceUpdate,
++@router.get("/attendance/members", response_model=MemberAttendanceReport)
++def attended_members(
++    service_id: uuid.UUID | None = None,
++    date_from: date | None = None,
++    date_to: date | None = None,
+     admin: User = Depends(require_admin),
+     db: Session = Depends(get_db),
+ ):
+-    template = db.get(ServiceTemplate, service_id)
+-    if template is None or template.church_id != admin.church_id:
+-        raise HTTPException(404, "Service not found")
+-    if body.name is not None:
+-        template.name = body.name.strip()
+-    if body.description is not None:
+-        template.description = body.description
+-    if body.is_active is not None:
+-        template.is_active = body.is_active
+-    db.commit()
+-    return template
++    """Every member who attended a service (or any service) in a period, with how many
++    sessions they came to. Leave the dates empty for 'ever'."""
++    today = datetime.now(church_tz(admin.church)).date()
++    end = min(date_to, today) if date_to else today
++    if date_from and date_from > end:
++        raise HTTPException(400, "The start date is after the end date")
++
++    conds = [
++        ServiceTemplate.church_id == admin.church_id,
++        ServiceOccurrence.service_date <= end,
++        ServiceOccurrence.status != "CANCELLED",
++    ]
++    if date_from:
++        conds.append(ServiceOccurrence.service_date >= date_from)
++    if service_id is not None:
++        conds.append(ServiceTemplate.id == service_id)
++
++    sessions = db.scalar(
++        select(func.count(ServiceOccurrence.id))
++        .select_from(ServiceOccurrence)
++        .join(ServiceTemplate, ServiceTemplate.id == ServiceOccurrence.service_template_id)
++        .where(*conds)
++    )
++    rows = db.execute(
++        select(
++            User.id,
++            User.full_name,
++            User.phone,
++            User.email,
++            func.count(AttendanceRecord.id),
++            func.max(ServiceOccurrence.service_date),
++        )
++        .select_from(AttendanceRecord)
++        .join(User, User.id == AttendanceRecord.user_id)
++        .join(ServiceOccurrence, ServiceOccurrence.id == AttendanceRecord.service_occurrence_id)
++        .join(ServiceTemplate, ServiceTemplate.id == ServiceOccurrence.service_template_id)
++        .where(*conds)
++        .group_by(User.id)
++        .order_by(func.count(AttendanceRecord.id).desc(), func.lower(User.full_name))
++    ).all()
++    return MemberAttendanceReport(
++        sessions=sessions or 0,
++        members=[
++            MemberAttendanceOut(
++                user_id=uid,
++                full_name=name,
++                phone=phone,
++                email=email,
++                times_attended=n,
++                last_attended=last,
++            )
++            for uid, name, phone, email, n, last in rows
++        ],
++    )
+diff -ruN a/backend/app/routers/users.py b/backend/app/routers/users.py
+--- a/backend/app/routers/users.py	2026-10-07 08:35:31.074326551 +0000
++++ b/backend/app/routers/users.py	2026-10-07 08:35:31.075614704 +0000
+@@ -1,16 +1,18 @@
+ import uuid
+ from pathlib import Path
+ 
+-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+-from sqlalchemy import select
++from datetime import datetime, timezone
++
++from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
++from sqlalchemy import func, select
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ 
+ from app.core.config import settings
+ from app.db.database import get_db
+ from app.deps import get_current_user
+-from app.models import User
+-from app.schemas import ProfileUpdate, UserOut, user_out
++from app.models import Department, User, UserDepartment
++from app.schemas import DepartmentRequestIn, MyDepartmentOut, ProfileUpdate, UserOut, user_out
+ 
+ router = APIRouter(prefix="/users", tags=["users"])
+ 
+@@ -93,3 +95,79 @@
+     if old and old.startswith(AVATAR_URL_PREFIX):
+         (folder / old.removeprefix(AVATAR_URL_PREFIX)).unlink(missing_ok=True)
+     return user_out(user)
++
++
++# ---------- my departments ----------
++def _my_departments(db: Session, user: User) -> list[MyDepartmentOut]:
++    rows = db.execute(
++        select(UserDepartment, Department)
++        .join(Department, Department.id == UserDepartment.department_id)
++        .where(UserDepartment.user_id == user.id, Department.is_active.is_(True))
++        .order_by(func.lower(Department.name))
++    ).all()
++    return [
++        MyDepartmentOut(
++            department_id=d.id, name=d.name, description=d.description, status=ud.status
++        )
++        for ud, d in rows
++    ]
++
++
++@router.get("/me/departments", response_model=list[MyDepartmentOut])
++def my_departments(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
++    return _my_departments(db, user)
++
++
++@router.post("/me/departments", response_model=list[MyDepartmentOut])
++def request_departments(
++    body: DepartmentRequestIn,
++    user: User = Depends(get_current_user),
++    db: Session = Depends(get_db),
++):
++    """Ask to join more departments. An admin still has to approve each request."""
++    ids = list(dict.fromkeys(body.department_ids))
++    found = db.scalars(
++        select(Department).where(
++            Department.id.in_(ids),
++            Department.church_id == user.church_id,
++            Department.is_active.is_(True),
++        )
++    ).all()
++    if len(found) != len(ids):
++        raise HTTPException(400, "One of the selected departments is not available")
++
++    existing = {
++        ud.department_id: ud
++        for ud in db.scalars(
++            select(UserDepartment).where(
++                UserDepartment.user_id == user.id, UserDepartment.department_id.in_(ids)
++            )
++        )
++    }
++    for dept in found:
++        ud = existing.get(dept.id)
++        if ud is None:
++            db.add(UserDepartment(user_id=user.id, department_id=dept.id, status="PENDING"))
++        elif ud.status == "REJECTED":  # asking again after a rejection
++            ud.status = "PENDING"
++            ud.joined_at = datetime.now(timezone.utc)
++            ud.reviewed_at = None
++            ud.reviewed_by = None
++        # already PENDING or ACTIVE: nothing to do
++    db.commit()
++    return _my_departments(db, user)
++
++
++@router.delete("/me/departments/{department_id}", status_code=204)
++def leave_department(
++    department_id: uuid.UUID,
++    user: User = Depends(get_current_user),
++    db: Session = Depends(get_db),
++):
++    """Cancel a pending request, or leave a department you are in."""
++    ud = db.get(UserDepartment, (user.id, department_id))
++    if ud is None:
++        raise HTTPException(404, "You are not in this department")
++    db.delete(ud)
++    db.commit()
++    return Response(status_code=204)
+diff -ruN a/backend/app/schemas/__init__.py b/backend/app/schemas/__init__.py
+--- a/backend/app/schemas/__init__.py	2026-10-07 08:35:31.079628962 +0000
++++ b/backend/app/schemas/__init__.py	2026-10-07 08:35:31.080958224 +0000
+@@ -31,7 +31,8 @@
+     email: EmailStr
+     phone: str = Field(max_length=30)
+     password: str = Field(min_length=8)
+-    department_ids: list[uuid.UUID] = Field(min_length=1, max_length=20)
++    # optional: departments the person asks to join (an admin approves each one)
++    department_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+ 
+     @field_validator("phone")
+     @classmethod
+@@ -156,6 +157,8 @@
+     # one-off events (e.g. a youth conference): first and last day
+     start_date: date | None = None
+     end_date: date | None = None
++    # empty = open to everyone; otherwise only active members of these departments
++    department_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+ 
+     @model_validator(mode="after")
+     def _check(self):
+@@ -177,9 +180,20 @@
+ 
+ 
+ class ServiceUpdate(BaseModel):
++    """Every field is optional; only the ones sent are changed."""
++
+     name: str | None = Field(default=None, min_length=1, max_length=150)
+     description: str | None = None
++    service_type: Literal["SERVICE", "MEETING", "EVENT"] | None = None
+     is_active: bool | None = None
++    # schedule: changing these regenerates upcoming sessions nobody has clocked in to yet
++    day_of_week: int | None = Field(default=None, ge=0, le=6)  # recurring services only
++    start_time: time | None = None
++    end_time: time | None = None  # send null to remove the end time
++    start_date: date | None = None  # one-off events only
++    end_date: date | None = None
++    # replaces who may attend; an empty list opens the service to everyone
++    department_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+ 
+ 
+ class ServiceOut(BaseModel):
+@@ -194,6 +208,11 @@
+     default_start_time: time | None
+     default_end_time: time | None
+     is_active: bool
++    # filled in by the admin endpoints
++    department_ids: list[uuid.UUID] = Field(default_factory=list)  # empty = open to everyone
++    first_date: date | None = None  # one-off events: first and last day
++    last_date: date | None = None
++    attendance_count: int = 0  # clock-ins ever recorded; above 0 the service cannot be deleted
+ 
+ 
+ class OccurrenceAdminOut(BaseModel):
+@@ -249,3 +268,30 @@
+     service_date: date
+     clock_in: datetime
+     clock_out: datetime | None
++
++
++class MemberAttendanceOut(BaseModel):
++    user_id: uuid.UUID
++    full_name: str
++    phone: str | None
++    email: str | None
++    times_attended: int
++    last_attended: date
++
++
++class MemberAttendanceReport(BaseModel):
++    # sessions of the chosen service held in the period (counted up to today)
++    sessions: int
++    members: list[MemberAttendanceOut]
++
++
++# ---------- a member's own department memberships ----------
++class MyDepartmentOut(BaseModel):
++    department_id: uuid.UUID
++    name: str
++    description: str | None
++    status: Literal["PENDING", "ACTIVE", "REJECTED"]
++
++
++class DepartmentRequestIn(BaseModel):
++    department_ids: list[uuid.UUID] = Field(min_length=1, max_length=20)
+diff -ruN a/web/src/format.js b/web/src/format.js
+--- a/web/src/format.js	2026-10-07 08:35:31.084911800 +0000
++++ b/web/src/format.js	2026-10-07 08:35:31.086066451 +0000
+@@ -26,3 +26,22 @@
+ }
+ 
+ export const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
++
++// "YYYY-MM-DD" for today in the church's timezone (what the date inputs and API expect)
++export const todayYMD = () =>
++  new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
++
++// calendar-date arithmetic on "YYYY-MM-DD" strings
++export const addDays = (ymd, n) => {
++  const [y, m, d] = ymd.split('-').map(Number)
++  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
++}
++
++// like dayLabel but with the year, for looking back at past services
++export const dayLabelYear = (ymd) => {
++  const [y, m, d] = ymd.split('-').map(Number)
++  return new Date(y, m - 1, d).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
++}
++
++export const dateShort = (iso) =>
++  new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric', timeZone: tz })
+diff -ruN a/web/src/pages/Admin.jsx b/web/src/pages/Admin.jsx
+--- a/web/src/pages/Admin.jsx	2026-10-07 08:35:31.095366051 +0000
++++ b/web/src/pages/Admin.jsx	2026-10-07 08:35:31.096586329 +0000
+@@ -1,19 +1,8 @@
+ import { useCallback, useEffect, useState } from 'react'
+ import { api } from '../api'
+-import { DAYS, dayLabel, time } from '../format'
+-
+-const EMPTY = {
+-  name: '',
+-  description: '',
+-  service_type: 'SERVICE',
+-  is_recurring: true,
+-  day_of_week: 6,
+-  start_time: '09:00',
+-  end_time: '11:00',
+-  start_date: '',
+-  end_date: '',
+-}
+-
++import ServicesTab from './admin/ServicesTab.jsx'
++import RequestsTab from './admin/RequestsTab.jsx'
++import AttendanceTab from './admin/AttendanceTab.jsx'
+ 
+ function DepartmentsTab() {
+   const [departments, setDepartments] = useState(null)
+@@ -243,259 +232,38 @@
+   )
+ }
+ 
++export default function Admin() {
++  const [tab, setTab] = useState('services')
++  const [pending, setPending] = useState([])
+ 
+-function ServiceForm({ onCreated }) {
+-  const [f, setF] = useState(EMPTY)
+-  const [busy, setBusy] = useState(false)
+-  const [error, setError] = useState('')
+-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+-
+-  async function submit(e) {
+-    e.preventDefault()
+-    setBusy(true)
+-    setError('')
+-    const body = {
+-      name: f.name,
+-      description: f.description || null,
+-      service_type: f.service_type,
+-      is_recurring: f.is_recurring,
+-      start_time: f.start_time,
+-      end_time: f.end_time || null,
+-    }
+-    if (f.is_recurring) body.day_of_week = Number(f.day_of_week)
+-    else {
+-      body.start_date = f.start_date || null
+-      body.end_date = f.end_date || null
+-    }
+-    try {
+-      await api('/services', { method: 'POST', body })
+-      setF(EMPTY)
+-      onCreated()
+-    } catch (err) {
+-      setError(err.message)
+-    } finally {
+-      setBusy(false)
+-    }
+-  }
+-
+-  return (
+-    <form className="card" onSubmit={submit}>
+-      <h3>Create a service or event</h3>
+-      <label>
+-        Name
+-        <input value={f.name} onChange={set('name')} placeholder="Sunday Service, Youth Conference…" required />
+-      </label>
+-      <label>
+-        Description (optional)
+-        <input value={f.description} onChange={set('description')} />
+-      </label>
+-      <div className="row">
+-        <label>
+-          Type
+-          <select value={f.service_type} onChange={set('service_type')}>
+-            <option value="SERVICE">Service</option>
+-            <option value="MEETING">Meeting</option>
+-            <option value="EVENT">Event / conference</option>
+-          </select>
+-        </label>
+-        <label>
+-          Repeats
+-          <select
+-            value={f.is_recurring ? 'weekly' : 'once'}
+-            onChange={(e) => setF({ ...f, is_recurring: e.target.value === 'weekly' })}
+-          >
+-            <option value="weekly">Every week</option>
+-            <option value="once">One-off (one or more days)</option>
+-          </select>
+-        </label>
+-      </div>
+-
+-      {f.is_recurring ? (
+-        <label>
+-          Day of the week
+-          <select value={f.day_of_week} onChange={set('day_of_week')}>
+-            {DAYS.map((d, i) => (
+-              <option key={d} value={i}>{d}</option>
+-            ))}
+-          </select>
+-        </label>
+-      ) : (
+-        <div className="row">
+-          <label>
+-            First day
+-            <input type="date" value={f.start_date} onChange={set('start_date')} required />
+-          </label>
+-          <label>
+-            Last day (optional)
+-            <input type="date" value={f.end_date} min={f.start_date} onChange={set('end_date')} />
+-          </label>
+-        </div>
+-      )}
+-
+-      <div className="row">
+-        <label>
+-          Starts
+-          <input type="time" value={f.start_time} onChange={set('start_time')} required />
+-        </label>
+-        <label>
+-          Ends
+-          <input type="time" value={f.end_time} onChange={set('end_time')} />
+-        </label>
+-      </div>
+-      {error && <p className="error">{error}</p>}
+-      <button className="btn btn-primary" disabled={busy}>{busy ? 'Creating…' : 'Create'}</button>
+-    </form>
+-  )
+-}
+-
+-function ServicesTab() {
+-  const [services, setServices] = useState(null)
+-  const [error, setError] = useState('')
+-
+-  const load = useCallback(() => {
+-    api('/services').then(setServices).catch((e) => setError(e.message))
+-  }, [])
+-  useEffect(load, [load])
+-
+-  async function toggle(s) {
+-    try {
+-      await api(`/services/${s.id}`, { method: 'PATCH', body: { is_active: !s.is_active } })
+-      load()
+-    } catch (e) {
+-      setError(e.message)
+-    }
+-  }
+-
+-  const when = (s) =>
+-    s.is_recurring
+-      ? `Every ${DAYS[s.day_of_week]}`
+-      : 'One-off event'
+-
+-  return (
+-    <>
+-      <ServiceForm onCreated={load} />
+-      <h2>All services</h2>
+-      {error && <p className="error">{error}</p>}
+-      {services && services.length === 0 && <p className="card muted">Nothing yet. Create your first service above.</p>}
+-      {services && services.length > 0 && (
+-        <ul className="card list">
+-          {services.map((s) => (
+-            <li key={s.id} className={s.is_active ? '' : 'inactive'}>
+-              <span>
+-                <strong>{s.name}</strong>
+-                <span className="muted"> · {when(s)} · {s.default_start_time?.slice(0, 5)}
+-                  {s.default_end_time ? `–${s.default_end_time.slice(0, 5)}` : ''}</span>
+-              </span>
+-              <button className="btn btn-ghost" onClick={() => toggle(s)}>
+-                {s.is_active ? 'Deactivate' : 'Activate'}
+-              </button>
+-            </li>
+-          ))}
+-        </ul>
+-      )}
+-    </>
+-  )
+-}
+-
+-function AttendanceTab() {
+-  const [occurrences, setOccurrences] = useState(null)
+-  const [selected, setSelected] = useState('')
+-  const [attendees, setAttendees] = useState([])
+-  const [error, setError] = useState('')
+-
+-  useEffect(() => {
+-    api('/services/occurrences')
+-      .then((rows) => {
+-        setOccurrences(rows)
+-        // default to the most recent service that has already started
+-        const started = rows.find((r) => new Date(r.start_time) <= new Date()) || rows[0]
+-        if (started) setSelected(started.id)
+-      })
+-      .catch((e) => setError(e.message))
++  const loadPending = useCallback(() => {
++    api('/departments/memberships/pending')
++      .then(setPending)
++      .catch(() => {})
+   }, [])
++  useEffect(loadPending, [loadPending])
+ 
+-  useEffect(() => {
+-    if (!selected) return
+-    api(`/services/occurrences/${selected}/attendance`).then(setAttendees).catch((e) => setError(e.message))
+-  }, [selected])
+-
+-  return (
+-    <>
+-      {error && <p className="error">{error}</p>}
+-      {occurrences && occurrences.length === 0 && <p className="card muted">No services scheduled yet.</p>}
+-      {occurrences && occurrences.length > 0 && (
+-        <>
+-          <label className="card">
+-            Service
+-            <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+-              {occurrences.map((o) => (
+-                <option key={o.id} value={o.id}>
+-                  {o.name} · {dayLabel(o.service_date)} · {o.attendee_count} attended
+-                </option>
+-              ))}
+-            </select>
+-          </label>
+-
+-          <div className="card table-wrap">
+-            <table>
+-              <thead>
+-                <tr><th>Name</th><th>Phone</th><th>In</th><th>Out</th></tr>
+-              </thead>
+-              <tbody>
+-                {attendees.length === 0 && (
+-                  <tr><td colSpan="4" className="muted">Nobody has clocked in yet.</td></tr>
+-                )}
+-                {attendees.map((a) => (
+-                  <tr key={a.user_id}>
+-                    <td>{a.full_name}</td>
+-                    <td>{a.phone}</td>
+-                    <td>{time(a.clock_in)}</td>
+-                    <td>{a.clock_out ? time(a.clock_out) : '—'}</td>
+-                  </tr>
+-                ))}
+-              </tbody>
+-            </table>
+-          </div>
+-        </>
+-      )}
+-    </>
+-  )
+-}
+-
+-export default function Admin() {
+-  const [tab, setTab] = useState('services')
++  const tabs = [
++    ['services', 'Services'],
++    ['departments', 'Departments'],
++    ['requests', pending.length ? `Join requests (${pending.length})` : 'Join requests'],
++    ['attendance', 'Attendance'],
++  ]
+ 
+   return (
+     <>
+       <h1>Admin</h1>
+-
+-      <div className="tabs">
+-        <button
+-          className={tab === 'services' ? 'active' : ''}
+-          onClick={() => setTab('services')}
+-        >
+-          Services
+-        </button>
+-
+-        <button
+-          className={tab === 'departments' ? 'active' : ''}
+-          onClick={() => setTab('departments')}
+-        >
+-          Departments
+-        </button>
+-
+-        <button
+-          className={tab === 'attendance' ? 'active' : ''}
+-          onClick={() => setTab('attendance')}
+-        >
+-          Attendance
+-        </button>
++      <div className="tabs wrap">
++        {tabs.map(([key, label]) => (
++          <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>
++            {label}
++          </button>
++        ))}
+       </div>
+ 
+       {tab === 'services' && <ServicesTab />}
+-
+       {tab === 'departments' && <DepartmentsTab />}
+-
++      {tab === 'requests' && <RequestsTab requests={pending} onChange={loadPending} />}
+       {tab === 'attendance' && <AttendanceTab />}
+     </>
+   )
+diff -ruN a/web/src/pages/Profile.jsx b/web/src/pages/Profile.jsx
+--- a/web/src/pages/Profile.jsx	2026-10-07 08:35:31.100576832 +0000
++++ b/web/src/pages/Profile.jsx	2026-10-07 08:35:31.101914052 +0000
+@@ -11,11 +11,50 @@
+   const [msg, setMsg] = useState({ type: '', text: '' })
+   const [busy, setBusy] = useState(false)
+   const [history, setHistory] = useState([])
++  const [mine, setMine] = useState(null) // my department memberships
++  const [allDepartments, setAllDepartments] = useState([])
++  const [deptError, setDeptError] = useState('')
++  const [deptBusy, setDeptBusy] = useState('')
+ 
+   useEffect(() => {
+     api('/attendance/me').then(setHistory).catch(() => {})
++    api('/users/me/departments').then(setMine).catch((e) => setDeptError(e.message))
++    api('/departments').then(setAllDepartments).catch(() => {})
+   }, [])
+ 
++  async function requestDepartment(id) {
++    setDeptBusy(id)
++    setDeptError('')
++    try {
++      setMine(await api('/users/me/departments', { method: 'POST', body: { department_ids: [id] } }))
++    } catch (err) {
++      setDeptError(err.message)
++    } finally {
++      setDeptBusy('')
++    }
++  }
++
++  async function leaveDepartment(d) {
++    if (d.status === 'ACTIVE' && !window.confirm(`Leave ${d.name}?`)) return
++    setDeptBusy(d.department_id)
++    setDeptError('')
++    try {
++      await api(`/users/me/departments/${d.department_id}`, { method: 'DELETE' })
++      setMine(await api('/users/me/departments'))
++    } catch (err) {
++      setDeptError(err.message)
++    } finally {
++      setDeptBusy('')
++    }
++  }
++
++  const STATUS = {
++    ACTIVE: ['Member', 'badge-open'],
++    PENDING: ['Waiting for approval', ''],
++    REJECTED: ['Not approved', 'badge-missed'],
++  }
++  const joinable = mine ? allDepartments.filter((d) => !mine.some((m) => m.department_id === d.id)) : []
++
+   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+ 
+   async function save(e) {
+@@ -77,6 +116,51 @@
+         <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+       </form>
+ 
++      <h2>My departments</h2>
++      {deptError && <p className="error">{deptError}</p>}
++      {mine && mine.length === 0 && <p className="card muted">You have not joined any department yet.</p>}
++      {mine && mine.length > 0 && (
++        <ul className="card list">
++          {mine.map((d) => (
++            <li key={d.department_id}>
++              <span>
++                <strong>{d.name}</strong>{' '}
++                <span className={`badge ${STATUS[d.status][1]}`}>{STATUS[d.status][0]}</span>
++              </span>
++              <span className="actions">
++                {d.status === 'REJECTED' && (
++                  <button className="btn btn-ghost" disabled={deptBusy === d.department_id} onClick={() => requestDepartment(d.department_id)}>
++                    Ask again
++                  </button>
++                )}
++                <button className="btn btn-ghost" disabled={deptBusy === d.department_id} onClick={() => leaveDepartment(d)}>
++                  {d.status === 'ACTIVE' ? 'Leave' : d.status === 'PENDING' ? 'Cancel request' : 'Remove'}
++                </button>
++              </span>
++            </li>
++          ))}
++        </ul>
++      )}
++      {joinable.length > 0 && (
++        <div className="card">
++          <h3>Join a department</h3>
++          <ul className="list">
++            {joinable.map((d) => (
++              <li key={d.id}>
++                <span>
++                  <strong>{d.name}</strong>
++                  {d.description && <span className="muted small"> · {d.description}</span>}
++                </span>
++                <button className="btn" disabled={deptBusy === d.id} onClick={() => requestDepartment(d.id)}>
++                  Request to join
++                </button>
++              </li>
++            ))}
++          </ul>
++          <p className="muted small">An admin has to approve your request before you are a member.</p>
++        </div>
++      )}
++
+       <h2>My attendance</h2>
+       {history.length === 0 ? (
+         <p className="card muted">No attendance recorded yet.</p>
+diff -ruN a/web/src/pages/Signup.jsx b/web/src/pages/Signup.jsx
+--- a/web/src/pages/Signup.jsx	2026-10-07 08:35:31.105837065 +0000
++++ b/web/src/pages/Signup.jsx	2026-10-07 08:35:31.107229909 +0000
+@@ -33,11 +33,6 @@
+     e.preventDefault()
+     setBusy(true)
+     setError('')
+-    if (form.department_ids.length === 0) {
+-      setError('Select at least one department')
+-      setBusy(false)
+-      return
+-    }
+     try {
+       await signup(form)
+     } catch (err) {
+@@ -64,11 +59,13 @@
+         </label>
+         <label>
+           Departments
+-          <span className="muted small">Select all departments you belong to.</span>
++          <span className="muted small">
++            Optional. Select every department you belong to; an admin will confirm each one.
++          </span>
+           {loadingDepartments ? (
+             <span className="muted small">Loading departments…</span>
+           ) : departments.length === 0 ? (
+-            <span className="muted small">No departments are available yet.</span>
++            <span className="muted small">No departments have been set up yet. You can ask to join one later from your profile.</span>
+           ) : (
+             <div className="check-list">
+               {departments.map((department) => (
+@@ -90,7 +87,7 @@
+           <span className="muted small">At least 8 characters</span>
+         </label>
+         {error && <p className="error">{error}</p>}
+-        <button className="btn btn-primary" disabled={busy || loadingDepartments || departments.length === 0}>
++        <button className="btn btn-primary" disabled={busy}>
+           {busy ? 'Creating…' : 'Sign up'}
+         </button>
+         <p className="muted small">
+diff -ruN a/web/src/pages/admin/AttendanceTab.jsx b/web/src/pages/admin/AttendanceTab.jsx
+--- a/web/src/pages/admin/AttendanceTab.jsx	1970-01-01 00:00:00.000000000 +0000
++++ b/web/src/pages/admin/AttendanceTab.jsx	2026-10-07 08:35:31.119226660 +0000
+@@ -0,0 +1,229 @@
++import { useEffect, useState } from 'react'
++import { api } from '../../api'
++import { addDays, dayLabelYear, time, todayYMD } from '../../format'
++
++const PRESETS = [
++  ['30 days', 30],
++  ['90 days', 90],
++  ['1 year', 365],
++]
++
++const matches = (q, ...fields) => {
++  const needle = q.trim().toLowerCase()
++  return !needle || fields.some((f) => (f || '').toLowerCase().includes(needle))
++}
++
++function AttendeeTable({ rows, q }) {
++  const shown = (rows || []).filter((a) => matches(q, a.full_name, a.phone, a.email))
++  return (
++    <div className="table-wrap inner">
++      <table>
++        <thead>
++          <tr><th>Name</th><th>Phone</th><th>In</th><th>Out</th></tr>
++        </thead>
++        <tbody>
++          {shown.length === 0 && (
++            <tr><td colSpan="4" className="muted">{rows?.length ? 'No one matches your search.' : 'Nobody clocked in.'}</td></tr>
++          )}
++          {shown.map((a) => (
++            <tr key={a.user_id}>
++              <td>{a.full_name}</td>
++              <td>{a.phone}</td>
++              <td>{time(a.clock_in)}</td>
++              <td>{a.clock_out ? time(a.clock_out) : '—'}</td>
++            </tr>
++          ))}
++        </tbody>
++      </table>
++    </div>
++  )
++}
++
++export default function AttendanceTab() {
++  const [services, setServices] = useState([])
++  const [serviceId, setServiceId] = useState('') // '' = every service
++  const [to, setTo] = useState(() => todayYMD())
++  const [from, setFrom] = useState(() => addDays(todayYMD(), -30))
++  const [mode, setMode] = useState('sessions') // 'sessions' | 'members'
++  const [q, setQ] = useState('')
++
++  const [sessions, setSessions] = useState(null)
++  const [report, setReport] = useState(null)
++  const [open, setOpen] = useState({}) // occurrence id -> expanded?
++  const [details, setDetails] = useState({}) // occurrence id -> attendee rows
++  const [error, setError] = useState('')
++
++  useEffect(() => {
++    api('/services').then(setServices).catch((e) => setError(e.message))
++  }, [])
++
++  function loadDetails(id) {
++    api(`/services/occurrences/${id}/attendance`)
++      .then((rows) => setDetails((d) => ({ ...d, [id]: rows })))
++      .catch((e) => setError(e.message))
++  }
++
++  // the query: re-run whenever a filter changes
++  useEffect(() => {
++    setError('')
++    if (!from || !to) return
++    if (from > to) {
++      setError('The start date is after the end date.')
++      return
++    }
++    let alive = true
++    const params = new URLSearchParams({ date_from: from, date_to: to })
++    if (serviceId) params.set('service_id', serviceId)
++
++    if (mode === 'sessions') {
++      setSessions(null)
++      setOpen({})
++      setDetails({})
++      api(`/services/occurrences?${params}`)
++        .then((rows) => {
++          if (!alive) return
++          setSessions(rows)
++          // show the most recent session that has attendees straight away
++          const first = rows.find((r) => r.attendee_count > 0)
++          if (first) {
++            setOpen({ [first.id]: true })
++            loadDetails(first.id)
++          }
++        })
++        .catch((e) => alive && setError(e.message))
++    } else {
++      setReport(null)
++      api(`/services/attendance/members?${params}`)
++        .then((r) => alive && setReport(r))
++        .catch((e) => alive && setError(e.message))
++    }
++    return () => {
++      alive = false
++    }
++  }, [serviceId, from, to, mode])
++
++  function toggle(o) {
++    const isOpen = !!open[o.id]
++    setOpen((cur) => ({ ...cur, [o.id]: !isOpen }))
++    if (!isOpen && !details[o.id]) loadDetails(o.id)
++  }
++
++  function preset(days) {
++    const today = todayYMD()
++    setTo(today)
++    setFrom(addDays(today, -days))
++  }
++
++  const members = report ? report.members.filter((m) => matches(q, m.full_name, m.phone, m.email)) : []
++
++  return (
++    <>
++      <section className="card">
++        <h3>Find who attended</h3>
++
++        <p className="muted small filter-label">Service</p>
++        <div className="tabs wrap">
++          <button className={serviceId === '' ? 'active' : ''} onClick={() => setServiceId('')}>All services</button>
++          {services.map((s) => (
++            <button key={s.id} className={serviceId === s.id ? 'active' : ''} onClick={() => setServiceId(s.id)}>
++              {s.name}
++            </button>
++          ))}
++        </div>
++
++        <div className="row">
++          <label>
++            From
++            <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
++          </label>
++          <label>
++            To
++            <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
++          </label>
++        </div>
++        <div className="actions">
++          <span className="muted small">Last:</span>
++          {PRESETS.map(([label, days]) => (
++            <button key={label} className="btn btn-ghost" type="button" onClick={() => preset(days)}>{label}</button>
++          ))}
++        </div>
++
++        <label>
++          Search a name or phone (optional)
++          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. Marie or 6 77" />
++        </label>
++
++        <div className="tabs">
++          <button className={mode === 'sessions' ? 'active' : ''} onClick={() => setMode('sessions')}>
++            By session
++          </button>
++          <button className={mode === 'members' ? 'active' : ''} onClick={() => setMode('members')}>
++            By member
++          </button>
++        </div>
++      </section>
++
++      {error && <p className="error">{error}</p>}
++
++      {mode === 'sessions' && (
++        <>
++          {!sessions && !error && <p className="muted">Loading…</p>}
++          {sessions && sessions.length === 0 && <p className="card muted">No sessions in this period.</p>}
++          {sessions && sessions.length > 0 && (
++            <ul className="card list sessions">
++              {sessions.map((o) => (
++                <li key={o.id} className="session">
++                  <button className="session-head" onClick={() => toggle(o)} aria-expanded={!!open[o.id]}>
++                    <span>
++                      <strong>{o.name}</strong>
++                      <span className="muted"> · {dayLabelYear(o.service_date)} · {time(o.start_time)}</span>
++                    </span>
++                    <span className={`badge ${o.attendee_count ? 'badge-completed' : ''}`}>
++                      {o.attendee_count} attended {open[o.id] ? '▴' : '▾'}
++                    </span>
++                  </button>
++                  {open[o.id] &&
++                    (details[o.id] ? <AttendeeTable rows={details[o.id]} q={q} /> : <p className="muted small pad">Loading…</p>)}
++                </li>
++              ))}
++            </ul>
++          )}
++        </>
++      )}
++
++      {mode === 'members' && (
++        <>
++          {!report && !error && <p className="muted">Loading…</p>}
++          {report && (
++            <>
++              <p className="muted">
++                {report.members.length} {report.members.length === 1 ? 'member' : 'members'} attended
++                {' '}across {report.sessions} {report.sessions === 1 ? 'session' : 'sessions'} in this period.
++              </p>
++              <div className="card table-wrap">
++                <table>
++                  <thead>
++                    <tr><th>Name</th><th>Phone</th><th>Attended</th><th>Last time</th></tr>
++                  </thead>
++                  <tbody>
++                    {members.length === 0 && (
++                      <tr><td colSpan="4" className="muted">{report.members.length ? 'No one matches your search.' : 'Nobody attended in this period.'}</td></tr>
++                    )}
++                    {members.map((m) => (
++                      <tr key={m.user_id}>
++                        <td>{m.full_name}</td>
++                        <td>{m.phone}</td>
++                        <td>{m.times_attended} of {report.sessions}</td>
++                        <td>{dayLabelYear(m.last_attended)}</td>
++                      </tr>
++                    ))}
++                  </tbody>
++                </table>
++              </div>
++            </>
++          )}
++        </>
++      )}
++    </>
++  )
++}
+diff -ruN a/web/src/pages/admin/RequestsTab.jsx b/web/src/pages/admin/RequestsTab.jsx
+--- a/web/src/pages/admin/RequestsTab.jsx	1970-01-01 00:00:00.000000000 +0000
++++ b/web/src/pages/admin/RequestsTab.jsx	2026-10-07 08:35:31.115222964 +0000
+@@ -0,0 +1,60 @@
++import { useState } from 'react'
++import { api } from '../../api'
++import { dateShort } from '../../format'
++
++// People who picked a department when signing up wait here until an admin approves them.
++export default function RequestsTab({ requests, onChange }) {
++  const [busyKey, setBusyKey] = useState('')
++  const [error, setError] = useState('')
++
++  async function review(r, action) {
++    setBusyKey(`${r.user_id}:${r.department_id}`)
++    setError('')
++    try {
++      await api(`/departments/memberships/${r.user_id}/${r.department_id}/${action}`, { method: 'PATCH' })
++      onChange()
++    } catch (e) {
++      setError(e.message)
++      onChange() // someone else may have handled it already: refresh the list
++    } finally {
++      setBusyKey('')
++    }
++  }
++
++  return (
++    <>
++      <h2>Department join requests</h2>
++      {error && <p className="error">{error}</p>}
++      {requests.length === 0 ? (
++        <p className="card muted">No requests waiting for approval.</p>
++      ) : (
++        <ul className="card list">
++          {requests.map((r) => {
++            const key = `${r.user_id}:${r.department_id}`
++            return (
++              <li key={key}>
++                <span>
++                  <strong>{r.full_name}</strong>
++                  <span className="muted"> wants to join </span>
++                  <strong>{r.department_name}</strong>
++                  <br />
++                  <span className="muted small">
++                    {[r.phone, r.email].filter(Boolean).join(' · ')} · requested {dateShort(r.joined_at)}
++                  </span>
++                </span>
++                <span className="actions">
++                  <button className="btn btn-primary" disabled={busyKey === key} onClick={() => review(r, 'approve')}>
++                    Approve
++                  </button>
++                  <button className="btn" disabled={busyKey === key} onClick={() => review(r, 'reject')}>
++                    Reject
++                  </button>
++                </span>
++              </li>
++            )
++          })}
++        </ul>
++      )}
++    </>
++  )
++}
+diff -ruN a/web/src/pages/admin/ServicesTab.jsx b/web/src/pages/admin/ServicesTab.jsx
+--- a/web/src/pages/admin/ServicesTab.jsx	1970-01-01 00:00:00.000000000 +0000
++++ b/web/src/pages/admin/ServicesTab.jsx	2026-10-07 08:35:31.111275187 +0000
+@@ -0,0 +1,337 @@
++import { useCallback, useEffect, useState } from 'react'
++import { api } from '../../api'
++import { DAYS, dayLabelYear } from '../../format'
++
++const EMPTY = {
++  name: '',
++  description: '',
++  service_type: 'SERVICE',
++  is_recurring: true,
++  day_of_week: 6,
++  start_time: '09:00',
++  end_time: '11:00',
++  start_date: '',
++  end_date: '',
++  department_ids: [],
++}
++
++const hhmm = (t) => (t ? t.slice(0, 5) : '')
++
++// the form values that match an existing service (used to pre-fill the edit form)
++const fromService = (s) => ({
++  name: s.name,
++  description: s.description || '',
++  service_type: s.service_type,
++  is_recurring: s.is_recurring,
++  day_of_week: s.day_of_week ?? 6,
++  start_time: hhmm(s.default_start_time),
++  end_time: hhmm(s.default_end_time),
++  start_date: s.first_date || '',
++  end_date: s.last_date || '',
++  department_ids: s.department_ids || [],
++})
++
++// One form for both creating (no `service`) and editing (`service` given).
++function ServiceForm({ service, departments, onSaved, onCancel }) {
++  const editing = !!service
++  const initial = editing ? fromService(service) : EMPTY
++  const [f, setF] = useState(initial)
++  const [restrict, setRestrict] = useState(initial.department_ids.length > 0) // who may attend
++  const [busy, setBusy] = useState(false)
++  const [error, setError] = useState('')
++  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
++
++  const sameIds = (a, b) => a.length === b.length && a.every((id) => b.includes(id))
++
++  function toggleDepartment(id) {
++    setF((cur) => ({
++      ...cur,
++      department_ids: cur.department_ids.includes(id)
++        ? cur.department_ids.filter((x) => x !== id)
++        : [...cur.department_ids, id],
++    }))
++  }
++
++  function createBody() {
++    const body = {
++      department_ids: restrict ? f.department_ids : [],
++      name: f.name,
++      description: f.description || null,
++      service_type: f.service_type,
++      is_recurring: f.is_recurring,
++      start_time: f.start_time,
++      end_time: f.end_time || null,
++    }
++    if (f.is_recurring) body.day_of_week = Number(f.day_of_week)
++    else {
++      body.start_date = f.start_date || null
++      body.end_date = f.end_date || null
++    }
++    return body
++  }
++
++  // only send what changed, so an untouched schedule is never regenerated
++  function editBody() {
++    const body = {}
++    if (f.name.trim() !== initial.name) body.name = f.name.trim()
++    if (f.description !== initial.description) body.description = f.description || null
++    if (f.service_type !== initial.service_type) body.service_type = f.service_type
++    if (f.start_time !== initial.start_time) body.start_time = f.start_time
++    if (f.end_time !== initial.end_time) body.end_time = f.end_time || null
++    const ids = restrict ? f.department_ids : []
++    if (!sameIds(ids, initial.department_ids)) body.department_ids = ids
++    if (f.is_recurring) {
++      if (Number(f.day_of_week) !== Number(initial.day_of_week)) body.day_of_week = Number(f.day_of_week)
++    } else if (f.start_date !== initial.start_date || f.end_date !== initial.end_date) {
++      body.start_date = f.start_date
++      body.end_date = f.end_date || f.start_date
++    }
++    return body
++  }
++
++  async function submit(e) {
++    e.preventDefault()
++    setError('')
++    if (restrict && f.department_ids.length === 0) {
++      return setError('Pick at least one department, or choose "Everyone".')
++    }
++    let body
++    if (editing) {
++      body = editBody()
++      if (Object.keys(body).length === 0) return onCancel()
++    } else {
++      body = createBody()
++    }
++    setBusy(true)
++    try {
++      await api(editing ? `/services/${service.id}` : '/services', { method: editing ? 'PATCH' : 'POST', body })
++      if (!editing) {
++        setF(EMPTY)
++        setRestrict(false)
++      }
++      onSaved()
++    } catch (err) {
++      setError(err.message)
++    } finally {
++      setBusy(false)
++    }
++  }
++
++  return (
++    <form className={editing ? 'edit-form' : 'card'} onSubmit={submit}>
++      <h3>{editing ? `Edit ${service.name}` : 'Create a service or event'}</h3>
++      <label>
++        Name
++        <input value={f.name} onChange={set('name')} placeholder="Sunday Service, Youth Conference…" required />
++      </label>
++      <label>
++        Description (optional)
++        <input value={f.description} onChange={set('description')} />
++      </label>
++      <div className="row">
++        <label>
++          Type
++          <select value={f.service_type} onChange={set('service_type')}>
++            <option value="SERVICE">Service</option>
++            <option value="MEETING">Meeting</option>
++            <option value="EVENT">Event / conference</option>
++          </select>
++        </label>
++        {editing ? (
++          <label>
++            Repeats
++            <input value={f.is_recurring ? 'Every week' : 'One-off event'} disabled />
++          </label>
++        ) : (
++          <label>
++            Repeats
++            <select
++              value={f.is_recurring ? 'weekly' : 'once'}
++              onChange={(e) => setF({ ...f, is_recurring: e.target.value === 'weekly' })}
++            >
++              <option value="weekly">Every week</option>
++              <option value="once">One-off (one or more days)</option>
++            </select>
++          </label>
++        )}
++      </div>
++
++      {f.is_recurring ? (
++        <label>
++          Day of the week
++          <select value={f.day_of_week} onChange={set('day_of_week')}>
++            {DAYS.map((d, i) => (
++              <option key={d} value={i}>{d}</option>
++            ))}
++          </select>
++        </label>
++      ) : (
++        <div className="row">
++          <label>
++            First day
++            <input type="date" value={f.start_date} onChange={set('start_date')} required />
++          </label>
++          <label>
++            Last day (optional)
++            <input type="date" value={f.end_date} min={f.start_date} onChange={set('end_date')} />
++          </label>
++        </div>
++      )}
++
++      <div className="row">
++        <label>
++          Starts
++          <input type="time" value={f.start_time} onChange={set('start_time')} required />
++        </label>
++        <label>
++          Ends
++          <input type="time" value={f.end_time} onChange={set('end_time')} />
++        </label>
++      </div>
++      <fieldset className="who">
++        <legend>Who can attend</legend>
++        <label className="check-item">
++          <input type="radio" name={`who-${service?.id || 'new'}`} checked={!restrict} onChange={() => setRestrict(false)} />
++          <span>Everyone</span>
++        </label>
++        <label className="check-item">
++          <input type="radio" name={`who-${service?.id || 'new'}`} checked={restrict} onChange={() => setRestrict(true)} />
++          <span>Only members of selected departments</span>
++        </label>
++        {restrict && (
++          <div className="check-list">
++            {departments.length === 0 && (
++              <span className="muted small">No departments yet. Create some in the Departments tab first.</span>
++            )}
++            {departments.map((d) => (
++              <label className="check-item" key={d.id}>
++                <input type="checkbox" checked={f.department_ids.includes(d.id)} onChange={() => toggleDepartment(d.id)} />
++                <span>
++                  {d.name}
++                  {!d.is_active && <span className="muted"> (inactive)</span>}
++                </span>
++              </label>
++            ))}
++          </div>
++        )}
++        {restrict && <p className="muted small">Only approved members of these departments will see this service and be able to clock in.</p>}
++      </fieldset>
++      {editing && (
++        <p className="muted small">
++          Changes to the day or time apply to upcoming sessions nobody has clocked in to yet. Past
++          sessions and their attendance stay as they were.
++        </p>
++      )}
++      {error && <p className="error">{error}</p>}
++      <div className="actions">
++        <button className="btn btn-primary" disabled={busy}>
++          {busy ? 'Saving…' : editing ? 'Save changes' : 'Create'}
++        </button>
++        {editing && (
++          <button className="btn btn-ghost" type="button" onClick={onCancel}>
++            Cancel
++          </button>
++        )}
++      </div>
++    </form>
++  )
++}
++
++export default function ServicesTab() {
++  const [services, setServices] = useState(null)
++  const [departments, setDepartments] = useState([])
++  const [editingId, setEditingId] = useState(null)
++  const [error, setError] = useState('')
++
++  const load = useCallback(() => {
++    api('/services').then(setServices).catch((e) => setError(e.message))
++  }, [])
++  useEffect(load, [load])
++  useEffect(() => {
++    api('/departments/admin').then(setDepartments).catch(() => {})
++  }, [])
++
++  const who = (s) => {
++    if (!s.department_ids?.length) return 'Open to everyone'
++    const names = s.department_ids.map((id) => departments.find((d) => d.id === id)?.name).filter(Boolean)
++    return `${names.join(', ') || 'Selected departments'} only`
++  }
++
++  async function toggle(s) {
++    setError('')
++    try {
++      await api(`/services/${s.id}`, { method: 'PATCH', body: { is_active: !s.is_active } })
++      load()
++    } catch (e) {
++      setError(e.message)
++    }
++  }
++
++  async function remove(s) {
++    if (!window.confirm(`Delete "${s.name}"? This cannot be undone.`)) return
++    setError('')
++    try {
++      await api(`/services/${s.id}`, { method: 'DELETE' })
++      load()
++    } catch (e) {
++      setError(e.message) // e.g. it has attendance history: the message says to deactivate instead
++    }
++  }
++
++  const when = (s) =>
++    s.is_recurring
++      ? `Every ${DAYS[s.day_of_week]}`
++      : s.first_date && s.last_date && s.first_date !== s.last_date
++        ? `${dayLabelYear(s.first_date)} – ${dayLabelYear(s.last_date)}`
++        : s.first_date
++          ? dayLabelYear(s.first_date)
++          : 'One-off event'
++
++  return (
++    <>
++      <ServiceForm departments={departments} onSaved={load} />
++      <h2>All services</h2>
++      {error && <p className="error">{error}</p>}
++      {services && services.length === 0 && <p className="card muted">Nothing yet. Create your first service above.</p>}
++      {services && services.length > 0 && (
++        <ul className="card list">
++          {services.map((s) =>
++            editingId === s.id ? (
++              <li key={s.id} className="edit-row">
++                <ServiceForm
++                  service={s}
++                  departments={departments}
++                  onSaved={() => {
++                    setEditingId(null)
++                    load()
++                  }}
++                  onCancel={() => setEditingId(null)}
++                />
++              </li>
++            ) : (
++              <li key={s.id} className={s.is_active ? '' : 'inactive'}>
++                <span>
++                  <strong>{s.name}</strong>
++                  <span className="muted">
++                    {' '}· {when(s)} · {s.default_start_time?.slice(0, 5)}
++                    {s.default_end_time ? `–${s.default_end_time.slice(0, 5)}` : ''}
++                    {!s.is_active ? ' · Inactive' : ''}
++                  </span>
++                  <br />
++                  <span className="muted small">{who(s)}</span>
++                </span>
++                <span className="actions">
++                  <button className="btn btn-ghost" onClick={() => setEditingId(s.id)}>Edit</button>
++                  <button className="btn btn-ghost" onClick={() => toggle(s)}>
++                    {s.is_active ? 'Deactivate' : 'Activate'}
++                  </button>
++                  <button className="btn btn-ghost danger-text" onClick={() => remove(s)}>Delete</button>
++                </span>
++              </li>
++            ),
++          )}
++        </ul>
++      )}
++    </>
++  )
++}
+diff -ruN a/web/src/styles.css b/web/src/styles.css
+--- a/web/src/styles.css	2026-10-07 08:35:31.089841036 +0000
++++ b/web/src/styles.css	2026-10-07 08:35:31.091295273 +0000
+@@ -29,13 +29,13 @@
+ .success { color: var(--success); font-size: .9rem; }
+ 
+ .topbar { background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+-.topbar-inner { max-width: 760px; margin: 0 auto; padding: .6rem 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
++.topbar-inner { max-width: 860px; margin: 0 auto; padding: .6rem 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+ .brand { font-size: 1rem; }
+ .topbar nav { display: flex; gap: .25rem; flex: 1; }
+ .topbar nav a { padding: .35rem .7rem; border-radius: 8px; color: var(--muted); text-decoration: none; font-weight: 500; }
+ .topbar nav a.active { background: #eef0ff; color: var(--primary); }
+ .topbar-user { display: flex; align-items: center; gap: .4rem; }
+-.container { max-width: 760px; margin: 0 auto; padding: 1.25rem 1rem 4rem; }
++.container { max-width: 860px; margin: 0 auto; padding: 1.25rem 1rem 4rem; }
+ 
+ .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin-bottom: .9rem; display: block; }
+ .card label, form label { display: block; font-weight: 500; font-size: .9rem; margin: .65rem 0; }
+@@ -111,3 +111,30 @@
+ .check-item input {
+   width: auto;
+ }
++
++/* admin: tabs, actions, editing, attendance */
++.tabs.wrap { flex-wrap: wrap; }
++.actions { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
++.stack { display: grid; gap: .5rem; width: 100%; }
++.danger-text { color: var(--danger); }
++.filter-label { margin: .5rem 0 0; }
++.list li.edit-row { display: block; }
++.edit-form label { display: block; }
++.table-wrap.inner { padding: 0 1rem .5rem; }
++.pad { padding: 0 1rem .75rem; }
++.sessions li.session { display: block; padding: 0; }
++.session-head {
++  display: flex; justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap;
++  width: 100%; padding: .8rem 1rem; border: 0; background: transparent; font: inherit;
++  color: inherit; text-align: left; cursor: pointer;
++}
++.session-head:hover { background: #f8f9fc; }
++fieldset.who { border: 1px solid #ddd; border-radius: 8px; padding: .5rem .75rem .75rem; margin: .25rem 0; }
++fieldset.who legend { font-size: .85rem; padding: 0 .35rem; }
++/* beat the generic "form label { display: block }" so the box sits beside its text */
++.card label.check-item, form label.check-item, label.check-item { display: flex; margin: 0; font-weight: 500; }
++.check-item input { margin: 0; flex: none; }
++fieldset.who .check-item { margin-top: .4rem; }
++fieldset.who .check-list { margin-top: .4rem; }
++
++[hidden] { display: none !important; }
