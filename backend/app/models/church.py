@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, String, Text
+from sqlalchemy import Boolean, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
@@ -39,6 +39,16 @@ class Church(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Boolean,
         nullable=False,
         default=True,
+    )
+
+    # where the church is, for the "are you at the service?" check on clock-in
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geofence_radius_m: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=200,
+        server_default="200",
     )
 
     users = relationship(

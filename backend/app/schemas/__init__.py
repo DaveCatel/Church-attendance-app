@@ -159,6 +159,8 @@ class ServiceCreate(BaseModel):
     end_date: date | None = None
     # empty = open to everyone; otherwise only active members of these departments
     department_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+    # how clock-in is checked: NONE, CODE (the code on the screen at church), CODE_LOCATION
+    verification_mode: Literal["NONE", "CODE", "CODE_LOCATION"] = "CODE_LOCATION"
 
     @model_validator(mode="after")
     def _check(self):
@@ -194,6 +196,7 @@ class ServiceUpdate(BaseModel):
     end_date: date | None = None
     # replaces who may attend; an empty list opens the service to everyone
     department_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+    verification_mode: Literal["NONE", "CODE", "CODE_LOCATION"] | None = None
 
 
 class ServiceOut(BaseModel):
@@ -210,6 +213,7 @@ class ServiceOut(BaseModel):
     is_active: bool
     # filled in by the admin endpoints
     department_ids: list[uuid.UUID] = Field(default_factory=list)  # empty = open to everyone
+    verification_mode: str = "NONE"
     first_date: date | None = None  # one-off events: first and last day
     last_date: date | None = None
     attendance_count: int = 0  # clock-ins ever recorded; above 0 the service cannot be deleted
@@ -238,6 +242,12 @@ class AttendeeOut(BaseModel):
 class ClockIn(BaseModel):
     occurrence_id: uuid.UUID
     device_time: datetime | None = None
+    # proof of presence, needed when the service checks it
+    code: str | None = Field(default=None, max_length=20)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0, le=1_000_000)
+    device_token: str | None = Field(default=None, max_length=100)
 
 
 class ServiceCard(BaseModel):
@@ -253,6 +263,8 @@ class ServiceCard(BaseModel):
     state: str
     clock_in: datetime | None
     clock_out: datetime | None
+    # tells the app whether to ask for the check-in code and the location
+    verification_mode: str = "NONE"
 
 
 class TodayOut(BaseModel):

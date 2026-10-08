@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.routers import account, attendance, auth, departments, members, services, users
+from app.routers import account, attendance, auth, checkin, departments, members, services, users
 
 production = settings.ENVIRONMENT == "production"
 app = FastAPI(
@@ -32,6 +32,7 @@ for router in (
     departments.router,
     members.router,
     account.router,
+    checkin.router,
 ):
     app.include_router(router, prefix="/api")
 

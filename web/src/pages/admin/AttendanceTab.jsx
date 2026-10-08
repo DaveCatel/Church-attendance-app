@@ -29,6 +29,12 @@ function AttendeeTable({ rows, q, onRemove }) {
             <tr key={a.user_id}>
               <td>
                 {a.full_name}
+                {a.review_status === 'NEEDS_REVIEW' && (
+                  <>
+                    {' '}
+                    <span className="badge badge-missed" title={(a.flags || []).join(', ')}>needs review</span>
+                  </>
+                )}
                 {a.source === 'ADMIN' && (
                   <>
                     {' '}
@@ -308,6 +314,11 @@ export default function AttendanceTab() {
                         </p>
                       ) : (
                         <>
+                          <p className="muted small">
+                            <a className="btn btn-ghost" href={`/checkin-display/${o.id}`} target="_blank" rel="noreferrer">
+                              Open check-in screen
+                            </a>
+                          </p>
                           {details[o.id] ? (
                             <AttendeeTable rows={details[o.id]} q={q} onRemove={(a) => removeAttendee(o, a)} />
                           ) : (

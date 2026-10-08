@@ -1,0 +1,149 @@
+import { useEffect, useRef, useState } from 'react'
+import { api } from '../api'
+import { time } from '../format'
+import { getDeviceToken, getLocation } from '../lib/device'
+
+export const BADGE = {
+  upcoming: 'Later today',
+  open: 'Open',
+  clocked_in: 'Clocked in',
+  completed: 'Attended',
+  missed: 'Missed',
+}
+
+// A service the member can clock in to. When the service checks presence, clocking in
+// asks for the code shown at church (and, for "code + location", where the phone is).
+// `autoCode` comes from scanning the QR code: it checks in straight away.
+export default function ServiceCard({ service: s, onChange, autoCode = '' }) {
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+  const [showCode, setShowCode] = useState(!!autoCode)
+  const [code, setCode] = useState(autoCode)
+  const autoRan = useRef(false)
+
+  const needsCode = !!s.verification_mode && s.verification_mode !== 'NONE'
+  const needsLocation = s.verification_mode === 'CODE_LOCATION'
+
+  async function clockIn(codeValue) {
+    setBusy(true)
+    setError('')
+    try {
+      const body = { occurrence_id: s.occurrence_id, device_time: new Date().toISOString() }
+      if (needsCode) {
+        body.code = codeValue
+        body.device_token = getDeviceToken()
+        if (needsLocation) {
+          setStatus('Checking your location…')
+          const where = await getLocation()
+          if (where) Object.assign(body, where)
+        }
+      }
+      onChange(await api('/attendance/clock-in', { method: 'POST', body }))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+      setStatus('')
+    }
+  }
+
+  async function clockOut() {
+    setBusy(true)
+    setError('')
+    try {
+      const body = { occurrence_id: s.occurrence_id, device_time: new Date().toISOString() }
+      onChange(await api('/attendance/clock-out', { method: 'POST', body }))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (autoCode && s.state === 'open' && !autoRan.current) {
+      autoRan.current = true
+      clockIn(autoCode)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const range = s.end_time ? `${time(s.start_time)} – ${time(s.end_time)}` : time(s.start_time)
+
+  return (
+    <article className="card service">
+      <div className="service-head">
+        <div>
+          <h3>{s.name}</h3>
+          <p className="muted">{range}</p>
+          {s.description && <p className="small">{s.description}</p>}
+        </div>
+        <span className={`badge badge-${s.state}`}>{BADGE[s.state]}</span>
+      </div>
+
+      {s.state === 'open' && !needsCode && (
+        <button className="btn btn-primary btn-big" onClick={() => clockIn()} disabled={busy}>
+          {busy ? 'Clocking in…' : 'Clock in'}
+        </button>
+      )}
+
+      {s.state === 'open' && needsCode && !showCode && (
+        <button className="btn btn-primary btn-big" onClick={() => setShowCode(true)}>
+          Clock in
+        </button>
+      )}
+
+      {s.state === 'open' && needsCode && showCode && (
+        <form
+          className="code-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            clockIn(code)
+          }}
+        >
+          <label>
+            Check-in code
+            <input
+              className="code-input"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="6-digit code"
+              maxLength={7}
+              autoFocus
+              required
+            />
+          </label>
+          <p className="muted small">
+            Type the code shown on the screen at church, or scan the QR code on that screen with your phone's camera.
+            {needsLocation && ' We will also ask for your location to confirm you are at the church.'}
+          </p>
+          <button className="btn btn-primary btn-big" disabled={busy}>
+            {busy ? status || 'Checking in…' : 'Check in'}
+          </button>
+        </form>
+      )}
+
+      {s.state === 'clocked_in' && (
+        <>
+          <p className="small">You clocked in at <strong>{time(s.clock_in)}</strong></p>
+          <button className="btn btn-danger btn-big" onClick={clockOut} disabled={busy}>
+            {busy ? 'Clocking out…' : 'Clock out'}
+          </button>
+        </>
+      )}
+      {s.state === 'completed' && (
+        <p className="small">
+          Thank you for attending. In <strong>{time(s.clock_in)}</strong> · out <strong>{time(s.clock_out)}</strong>
+        </p>
+      )}
+      {s.state === 'upcoming' && (
+        <button className="btn btn-big" disabled>Clock-in opens at {time(s.opens_at)}</button>
+      )}
+      {s.state === 'missed' && <p className="muted small">This service has ended and you did not clock in.</p>}
+      {error && <p className="error">{error}</p>}
+    </article>
+  )
+}

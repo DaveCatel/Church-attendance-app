@@ -76,6 +76,10 @@ class SlidingWindowLimiter:
 login_failures = SlidingWindowLimiter(limit=5, window_seconds=15 * 60)
 password_change_failures = SlidingWindowLimiter(limit=5, window_seconds=15 * 60)
 
+# Wrong check-in codes: 10 per member every 5 minutes (a code has only a million
+# possibilities, so guessing has to be slow).
+code_failures = SlidingWindowLimiter(limit=10, window_seconds=5 * 60)
+
 # Generous because a whole congregation may share one address.
 signup_limiter = SlidingWindowLimiter(limit=30, window_seconds=60 * 60)
 

@@ -3,6 +3,7 @@ import { api } from '../api'
 import ServicesTab from './admin/ServicesTab.jsx'
 import RequestsTab from './admin/RequestsTab.jsx'
 import MembersTab from './admin/MembersTab.jsx'
+import CheckInTab from './admin/CheckInTab.jsx'
 import AttendanceTab from './admin/AttendanceTab.jsx'
 
 function DepartmentsTab() {
@@ -236,6 +237,7 @@ function DepartmentsTab() {
 export default function Admin() {
   const [tab, setTab] = useState('services')
   const [pending, setPending] = useState([])
+  const [reviewCount, setReviewCount] = useState(0)
 
   const loadPending = useCallback(() => {
     api('/departments/memberships/pending')
@@ -244,12 +246,20 @@ export default function Admin() {
   }, [])
   useEffect(loadPending, [loadPending])
 
+  const loadReviewCount = useCallback(() => {
+    api('/checkin/review/count')
+      .then((r) => setReviewCount(r.count))
+      .catch(() => {})
+  }, [])
+  useEffect(loadReviewCount, [loadReviewCount])
+
   const tabs = [
     ['services', 'Services'],
     ['departments', 'Departments'],
     ['requests', pending.length ? `Join requests (${pending.length})` : 'Join requests'],
     ['members', 'Members'],
     ['attendance', 'Attendance'],
+    ['checkin', reviewCount ? `Check-in (${reviewCount})` : 'Check-in'],
   ]
 
   return (
@@ -268,6 +278,7 @@ export default function Admin() {
       {tab === 'requests' && <RequestsTab requests={pending} onChange={loadPending} />}
       {tab === 'members' && <MembersTab />}
       {tab === 'attendance' && <AttendanceTab />}
+      {tab === 'checkin' && <CheckInTab onChange={loadReviewCount} />}
     </>
   )
 }

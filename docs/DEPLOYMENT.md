@@ -92,6 +92,27 @@ attendance.yourchurch.org {
 Then: `sudo systemctl enable --now church-api caddy`. Open only ports 80 and 443 in the
 firewall; PostgreSQL (5432) and the API (8000) should not be reachable from outside.
 
+## 4a. Check-in verification (code, QR and location)
+
+Each service can require the code shown on a screen at church, plus a location check
+(Admin > Services > Check-in verification).
+
+- **HTTPS is required in production.** Phones only share their location, and browsers only
+  allow the phone-id storage, on `https://` pages. On plain `http://` every check-in would be
+  flagged "did not share location".
+- **Set the church location once:** stand inside the church, open Admin > Check-in and press
+  "Use my current location", then Save. Keep the radius at 150-300 m; phones are less
+  accurate indoors.
+- **On the day:** Admin > Check-in > "Open check-in screen" on a projector or tablet. Use the
+  Full screen button. The code changes every 30 seconds and works for up to a minute.
+- **The code is derived from `SECRET_KEY`.** If you change that key, codes already shown
+  stop working; just refresh the check-in screen.
+- **Check-ins that look doubtful** (far from the church, no location, a new phone) still go
+  through but appear under Admin > Check-in > Needs review, where you can approve or remove
+  them. A wrong or expired code is always refused.
+- The server must see each member's real address (the `--proxy-headers` option in section 4)
+  for the address saved with each check-in to be meaningful.
+
 ## 5. Database changes (migrations)
 
 From now on, a change to a model is applied with Alembic instead of a hand-run script.

@@ -13,6 +13,13 @@ const EMPTY = {
   start_date: '',
   end_date: '',
   department_ids: [],
+  verification_mode: 'CODE_LOCATION',
+}
+
+const VERIFY = {
+  NONE: 'Check-in: off',
+  CODE: 'Check-in: code',
+  CODE_LOCATION: 'Check-in: code + location',
 }
 
 const hhmm = (t) => (t ? t.slice(0, 5) : '')
@@ -29,10 +36,11 @@ const fromService = (s) => ({
   start_date: s.first_date || '',
   end_date: s.last_date || '',
   department_ids: s.department_ids || [],
+  verification_mode: s.verification_mode || 'NONE',
 })
 
 // One form for both creating (no `service`) and editing (`service` given).
-function ServiceForm({ service, departments, onSaved, onCancel }) {
+function ServiceForm({ service, departments, locationSet, onSaved, onCancel }) {
   const editing = !!service
   const initial = editing ? fromService(service) : EMPTY
   const [f, setF] = useState(initial)
@@ -54,6 +62,7 @@ function ServiceForm({ service, departments, onSaved, onCancel }) {
 
   function createBody() {
     const body = {
+      verification_mode: f.verification_mode,
       department_ids: restrict ? f.department_ids : [],
       name: f.name,
       description: f.description || null,
@@ -78,6 +87,7 @@ function ServiceForm({ service, departments, onSaved, onCancel }) {
     if (f.service_type !== initial.service_type) body.service_type = f.service_type
     if (f.start_time !== initial.start_time) body.start_time = f.start_time
     if (f.end_time !== initial.end_time) body.end_time = f.end_time || null
+    if (f.verification_mode !== initial.verification_mode) body.verification_mode = f.verification_mode
     const ids = restrict ? f.department_ids : []
     if (!sameIds(ids, initial.department_ids)) body.department_ids = ids
     if (f.is_recurring) {
@@ -216,6 +226,32 @@ function ServiceForm({ service, departments, onSaved, onCancel }) {
         )}
         {restrict && <p className="muted small">Only approved members of these departments will see this service and be able to clock in.</p>}
       </fieldset>
+      <fieldset className="who">
+        <legend>Check-in verification</legend>
+        {[
+          ['CODE_LOCATION', 'Code + location (recommended)', 'Members type the code shown at church, and their phone must be at the church.'],
+          ['CODE', 'Code only', 'Members type the code shown on the screen at church.'],
+          ['NONE', 'Off', 'Anyone signed in can clock in from anywhere.'],
+        ].map(([value, title, help]) => (
+          <label className="check-item" key={value}>
+            <input
+              type="radio"
+              name={`verify-${service?.id || 'new'}`}
+              checked={f.verification_mode === value}
+              onChange={() => setF({ ...f, verification_mode: value })}
+            />
+            <span>
+              {title}
+              <span className="muted small"> · {help}</span>
+            </span>
+          </label>
+        ))}
+        {f.verification_mode === 'CODE_LOCATION' && !locationSet && (
+          <p className="muted small">
+            The church location is not set yet, so the location part is skipped. Set it in the Check-in tab.
+          </p>
+        )}
+      </fieldset>
       {editing && (
         <p className="muted small">
           Changes to the day or time apply to upcoming sessions nobody has clocked in to yet. Past
@@ -240,6 +276,7 @@ function ServiceForm({ service, departments, onSaved, onCancel }) {
 export default function ServicesTab() {
   const [services, setServices] = useState(null)
   const [departments, setDepartments] = useState([])
+  const [locationSet, setLocationSet] = useState(true)
   const [editingId, setEditingId] = useState(null)
   const [error, setError] = useState('')
 
@@ -249,6 +286,9 @@ export default function ServicesTab() {
   useEffect(load, [load])
   useEffect(() => {
     api('/departments/admin').then(setDepartments).catch(() => {})
+    api('/checkin/church-location')
+      .then((l) => setLocationSet(l.latitude != null))
+      .catch(() => {})
   }, [])
 
   const who = (s) => {
@@ -289,7 +329,7 @@ export default function ServicesTab() {
 
   return (
     <>
-      <ServiceForm departments={departments} onSaved={load} />
+      <ServiceForm departments={departments} locationSet={locationSet} onSaved={load} />
       <h2>All services</h2>
       {error && <p className="error">{error}</p>}
       {services && services.length === 0 && <p className="card muted">Nothing yet. Create your first service above.</p>}
@@ -301,6 +341,7 @@ export default function ServicesTab() {
                 <ServiceForm
                   service={s}
                   departments={departments}
+                  locationSet={locationSet}
                   onSaved={() => {
                     setEditingId(null)
                     load()
@@ -318,7 +359,7 @@ export default function ServicesTab() {
                     {!s.is_active ? ' · Inactive' : ''}
                   </span>
                   <br />
-                  <span className="muted small">{who(s)}</span>
+                  <span className="muted small">{who(s)} · {VERIFY[s.verification_mode] || 'Check-in: off'}</span>
                 </span>
                 <span className="actions">
                   <button className="btn btn-ghost" onClick={() => setEditingId(s.id)}>Edit</button>

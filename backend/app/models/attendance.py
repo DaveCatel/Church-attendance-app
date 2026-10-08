@@ -3,8 +3,10 @@ from datetime import datetime
 
 from sqlalchemy import (
     DateTime,
+    Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
 )
@@ -83,6 +85,23 @@ class AttendanceRecord(
     clock_out_server_time: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+
+    # what the phone reported at clock-in (only when the service checks location)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
+    # comma separated reasons an admin should look at this record, for example
+    # "FAR_FROM_VENUE,NEW_DEVICE"; review_status is OK, NEEDS_REVIEW or APPROVED
+    verification_flags: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    review_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="OK",
+        server_default="OK",
     )
 
     sync_status: Mapped[str] = mapped_column(

@@ -62,6 +62,15 @@ class ServiceTemplate(
         nullable=True,
     )
 
+    # NONE = anyone logged in can clock in, CODE = must enter the code shown at church,
+    # CODE_LOCATION = the code plus a check that the phone is at the church
+    verification_mode: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="NONE",
+        server_default="NONE",
+    )
+
     is_recurring: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

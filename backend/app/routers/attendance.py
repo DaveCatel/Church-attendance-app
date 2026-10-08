@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,8 +16,16 @@ from app.models import (
     Department,
     User,
     UserDepartment,
+    UserDevice,
 )
+from app.core.ratelimit import code_failures
 from app.schemas import ClockIn, HistoryItem, ServiceCard, TodayOut
+from app.services.checkin import (
+    FLAG_NEW_DEVICE,
+    FLAG_NO_DEVICE_ID,
+    check_location,
+    code_is_valid,
+)
 from app.services.scheduling import attendance_state, church_tz, ensure_occurrences, window
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -37,6 +45,7 @@ def _card(occ, template, record, now, tz) -> ServiceCard:
         state=attendance_state(occ, record, now, tz),
         clock_in=record.clock_in if record else None,
         clock_out=record.clock_out if record else None,
+        verification_mode=template.verification_mode,
     )
 
 
@@ -153,8 +162,83 @@ def today(user: User = Depends(get_current_user), db: Session = Depends(get_db))
     )
 
 
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+def _require_valid_code(user: User, occurrence_id: uuid.UUID, code: str | None) -> None:
+    """The code on the screen at church proves the person is in the room right now."""
+    key = str(user.id)
+    code_failures.check(key)  # 429 after too many wrong guesses
+    if not (code or "").strip():
+        raise HTTPException(400, "Enter the check-in code shown on the screen at church.")
+    if not code_is_valid(occurrence_id, code):
+        code_failures.hit(key)
+        raise HTTPException(
+            400, "That code is wrong or has expired. Look at the screen at church for the new one."
+        )
+
+
+def _identify_device(
+    db: Session, user: User, occ: ServiceOccurrence, token: str | None, request: Request, now: datetime
+) -> tuple[UserDevice | None, list[str]]:
+    """Link the clock-in to the phone it came from.
+
+    One phone can check in only one person per service, which stops someone from
+    clocking in a friend by logging in to the friend's account on their own phone."""
+    token = (token or "").strip()
+    if not token:
+        return None, [FLAG_NO_DEVICE_ID]
+
+    used_for_someone_else = db.scalar(
+        select(AttendanceRecord.id)
+        .join(UserDevice, UserDevice.id == AttendanceRecord.device_id)
+        .where(
+            AttendanceRecord.service_occurrence_id == occ.id,
+            UserDevice.device_identifier == token,
+            AttendanceRecord.user_id != user.id,
+        )
+        .limit(1)
+    )
+    if used_for_someone_else is not None:
+        raise HTTPException(
+            409,
+            "This phone has already been used to check in someone else for this service. "
+            "Everyone must check in with their own phone. If you have no phone, ask an usher "
+            "to mark you present.",
+        )
+
+    flags: list[str] = []
+    device = db.scalar(
+        select(UserDevice).where(
+            UserDevice.user_id == user.id, UserDevice.device_identifier == token
+        )
+    )
+    if device is None:
+        known = db.scalar(select(func.count(UserDevice.id)).where(UserDevice.user_id == user.id)) or 0
+        device = UserDevice(
+            user_id=user.id,
+            device_identifier=token,
+            device_name=(request.headers.get("user-agent") or "")[:150] or None,
+            platform="WEB",
+            last_seen_at=now,
+        )
+        db.add(device)
+        db.flush()
+        if known:  # the very first phone is not suspicious, a second one is worth a look
+            flags.append(FLAG_NEW_DEVICE)
+    else:
+        device.last_seen_at = now
+    return device, flags
+
+
 @router.post("/clock-in", response_model=ServiceCard)
-def clock_in(body: ClockIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def clock_in(
+    body: ClockIn,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     occ, template = _load(db, user, body.occurrence_id)
     _require_service_eligibility(db, user, template)
     tz = church_tz(user.church)
@@ -172,14 +256,44 @@ def clock_in(body: ClockIn, user: User = Depends(get_current_user), db: Session 
     if state == "missed":
         raise HTTPException(400, "This service has ended")
 
+    # --- is this person really here, and really themselves? ---
+    mode = template.verification_mode
+    flags: list[str] = []
+    device = None
+    distance = None
+    if mode in ("CODE", "CODE_LOCATION"):
+        _require_valid_code(user, occ.id, body.code)
+        device, device_flags = _identify_device(db, user, occ, body.device_token, request, now)
+        flags += device_flags
+    if mode == "CODE_LOCATION":
+        church = user.church
+        location_flags, distance = check_location(
+            church.latitude,
+            church.longitude,
+            church.geofence_radius_m,
+            body.latitude,
+            body.longitude,
+            body.accuracy_m,
+        )
+        flags += location_flags
+
     record = AttendanceRecord(
         user_id=user.id,
         service_occurrence_id=occ.id,
+        device_id=device.id if device else None,
         clock_in=now,
         clock_in_server_time=now,
         clock_in_device_time=body.device_time,
         clock_in_source="ONLINE",
         sync_status="SYNCED",
+        # a location is only kept when the service asked for one
+        latitude=body.latitude if mode == "CODE_LOCATION" else None,
+        longitude=body.longitude if mode == "CODE_LOCATION" else None,
+        accuracy_m=body.accuracy_m if mode == "CODE_LOCATION" else None,
+        distance_m=distance,
+        ip_address=_client_ip(request) if mode != "NONE" else None,
+        verification_flags=",".join(flags) or None,
+        review_status="NEEDS_REVIEW" if flags else "OK",
     )
     db.add(record)
     try:
