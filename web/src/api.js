@@ -1,5 +1,10 @@
 // Small fetch wrapper: adds the bearer token and transparently refreshes it once on 401.
-const BASE = '/api'
+const BASE = import.meta.env.VITE_API_URL?.replace(/\/$/, '')
+
+if (!BASE) {
+  console.error('VITE_API_URL is not configured')
+}
+//const BASE = '/api'
 const KEY = 'attendance.tokens'
 
 function load() {
