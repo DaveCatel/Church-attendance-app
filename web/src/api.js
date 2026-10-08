@@ -1,5 +1,5 @@
 // Small fetch wrapper: adds the bearer token and transparently refreshes it once on 401.
-const BASE = import.meta.env.VITE_API_URL?.replace(/\/$/, '')
+const BASE = `${(import.meta.env.VITE_API_URL || '').replace(/\/$/, '')}/api`
 
 if (!BASE) {
   console.error('VITE_API_URL is not configured')
