@@ -1,284 +1,91 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
-import ServicesTab from './admin/ServicesTab.jsx'
-import RequestsTab from './admin/RequestsTab.jsx'
-import MembersTab from './admin/MembersTab.jsx'
-import CheckInTab from './admin/CheckInTab.jsx'
-import AttendanceTab from './admin/AttendanceTab.jsx'
 
-function DepartmentsTab() {
-  const [departments, setDepartments] = useState(null)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [editing, setEditing] = useState(null)
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const load = useCallback(() => {
-    api('/departments/admin')
-      .then(setDepartments)
-      .catch((e) => setError(e.message))
-  }, [])
-
-  useEffect(load, [load])
-
-  async function create(e) {
-    e.preventDefault()
-
-    if (!name.trim()) return
-
-    setBusy(true)
-    setError('')
-
-    try {
-      await api('/departments', {
-        method: 'POST',
-        body: {
-          name: name.trim(),
-          description: description.trim() || null,
-        },
-      })
-
-      setName('')
-      setDescription('')
-      load()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function saveEdit() {
-    if (!editing.name.trim()) return
-
-    setBusy(true)
-    setError('')
-
-    try {
-      await api(`/departments/${editing.id}`, {
-        method: 'PATCH',
-        body: {
-          name: editing.name.trim(),
-          description: editing.description?.trim() || null,
-        },
-      })
-
-      setEditing(null)
-      load()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function toggle(department) {
-    setError('')
-
-    try {
-      await api(`/departments/${department.id}`, {
-        method: 'PATCH',
-        body: {
-          is_active: !department.is_active,
-        },
-      })
-
-      load()
-    } catch (e) {
-      setError(e.message)
-    }
-  }
-
-  return (
-    <>
-      <form className="card" onSubmit={create}>
-        <h3>Create department</h3>
-
-        <label>
-          Department name
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Choir"
-            required
-          />
-        </label>
-
-        <label>
-          Description
-          <input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Church choir department"
-          />
-        </label>
-
-        {error && <p className="error">{error}</p>}
-
-        <button
-          className="btn btn-primary"
-          disabled={busy}
-        >
-          {busy ? 'Creating…' : 'Create department'}
-        </button>
-      </form>
-
-      <h2>Departments</h2>
-
-      {departments && departments.length === 0 && (
-        <p className="card muted">
-          No departments created yet.
-        </p>
-      )}
-
-      {departments && departments.length > 0 && (
-        <ul className="card list">
-          {departments.map((department) => (
-            <li
-              key={department.id}
-              className={department.is_active ? '' : 'inactive'}
-            >
-              {editing?.id === department.id ? (
-                <div className="stack">
-                  <input
-                    value={editing.name}
-                    onChange={(e) =>
-                      setEditing({
-                        ...editing,
-                        name: e.target.value,
-                      })
-                    }
-                  />
-
-                  <input
-                    value={editing.description || ''}
-                    onChange={(e) =>
-                      setEditing({
-                        ...editing,
-                        description: e.target.value,
-                      })
-                    }
-                  />
-
-                  <div className="row">
-                    <button
-                      className="btn btn-primary"
-                      type="button"
-                      onClick={saveEdit}
-                      disabled={busy}
-                    >
-                      Save
-                    </button>
-
-                    <button
-                      className="btn btn-ghost"
-                      type="button"
-                      onClick={() => setEditing(null)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <span>
-                    <strong>{department.name}</strong>
-
-                    {department.description && (
-                      <span className="muted">
-                        {' · '}
-                        {department.description}
-                      </span>
-                    )}
-
-                    {!department.is_active && (
-                      <span className="muted">
-                        {' · Inactive'}
-                      </span>
-                    )}
-                  </span>
-
-                  <span className="row">
-                    <button
-                      className="btn btn-ghost"
-                      type="button"
-                      onClick={() =>
-                        setEditing({
-                          id: department.id,
-                          name: department.name,
-                          description: department.description || '',
-                        })
-                      }
-                    >
-                      Edit
-                    </button>
-
-                    <button
-                      className="btn btn-ghost"
-                      type="button"
-                      onClick={() => toggle(department)}
-                    >
-                      {department.is_active
-                        ? 'Deactivate'
-                        : 'Activate'}
-                    </button>
-                  </span>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </>
-  )
-}
+const sections = [
+  {
+    to: '/admin/services',
+    number: '01',
+    title: 'Services',
+    description: 'Create services, update schedules, set attendance rules, and manage active services.',
+    action: 'Manage services',
+  },
+  {
+    to: '/admin/departments',
+    number: '02',
+    title: 'Departments',
+    description: 'Create and edit church departments, and activate or deactivate them.',
+    action: 'Manage departments',
+  },
+  {
+    to: '/admin/requests',
+    number: '03',
+    title: 'Join requests',
+    description: 'Review membership requests and approve or reject department applications.',
+    action: 'Review requests',
+    countKey: 'requests',
+  },
+  {
+    to: '/admin/members',
+    number: '04',
+    title: 'Members',
+    description: 'Find members and manage member accounts and access.',
+    action: 'Manage members',
+  },
+  {
+    to: '/admin/attendance',
+    number: '05',
+    title: 'Attendance records',
+    description: 'Browse attendance by service and date, and review attendance reports.',
+    action: 'View attendance',
+  },
+  {
+    to: '/admin/checkin',
+    number: '06',
+    title: 'Check-in & verification',
+    description: 'Open check-in tools, manage church location settings, and review flagged check-ins.',
+    action: 'Open check-in tools',
+    countKey: 'checkin',
+  },
+]
 
 export default function Admin() {
-  const [tab, setTab] = useState('services')
-  const [pending, setPending] = useState([])
-  const [reviewCount, setReviewCount] = useState(0)
+  const [counts, setCounts] = useState({ requests: 0, checkin: 0 })
 
-  const loadPending = useCallback(() => {
+  useEffect(() => {
     api('/departments/memberships/pending')
-      .then(setPending)
+      .then((items) => setCounts((current) => ({ ...current, requests: items.length })))
       .catch(() => {})
-  }, [])
-  useEffect(loadPending, [loadPending])
-
-  const loadReviewCount = useCallback(() => {
     api('/checkin/review/count')
-      .then((r) => setReviewCount(r.count))
+      .then((result) => setCounts((current) => ({ ...current, checkin: result.count || 0 })))
       .catch(() => {})
   }, [])
-  useEffect(loadReviewCount, [loadReviewCount])
-
-  const tabs = [
-    ['services', 'Services'],
-    ['departments', 'Departments'],
-    ['requests', pending.length ? `Join requests (${pending.length})` : 'Join requests'],
-    ['members', 'Members'],
-    ['attendance', 'Attendance'],
-    ['checkin', reviewCount ? `Check-in (${reviewCount})` : 'Check-in'],
-  ]
 
   return (
-    <>
-      <h1>Admin</h1>
-      <div className="tabs wrap">
-        {tabs.map(([key, label]) => (
-          <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>
-            {label}
-          </button>
-        ))}
+    <section className="admin-home">
+      <div className="admin-page-heading">
+        <p className="eyebrow">CHURCH MANAGEMENT</p>
+        <h1>Admin dashboard</h1>
+        <p className="muted">Choose an area to manage. Each section has its own page and tools.</p>
       </div>
 
-      {tab === 'services' && <ServicesTab />}
-      {tab === 'departments' && <DepartmentsTab />}
-      {tab === 'requests' && <RequestsTab requests={pending} onChange={loadPending} />}
-      {tab === 'members' && <MembersTab />}
-      {tab === 'attendance' && <AttendanceTab />}
-      {tab === 'checkin' && <CheckInTab onChange={loadReviewCount} />}
-    </>
+      <div className="admin-section-grid">
+        {sections.map((section) => (
+          <Link className="admin-section-card" to={section.to} key={section.to}>
+            <div className="admin-section-card-top">
+              <span className="admin-section-number">{section.number}</span>
+              {section.countKey && counts[section.countKey] > 0 && (
+                <span className="admin-count-badge">
+                  {counts[section.countKey]} {section.countKey === 'requests' ? 'pending' : 'to review'}
+                </span>
+              )}
+            </div>
+            <h2>{section.title}</h2>
+            <p>{section.description}</p>
+            <span className="admin-card-action">{section.action} <span aria-hidden="true">→</span></span>
+          </Link>
+        ))}
+      </div>
+    </section>
   )
 }

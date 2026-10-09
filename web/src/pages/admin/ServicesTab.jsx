@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../api'
 import { DAYS, dayLabelYear } from '../../format'
 
@@ -40,7 +41,7 @@ const fromService = (s) => ({
 })
 
 // One form for both creating (no `service`) and editing (`service` given).
-function ServiceForm({ service, departments, locationSet, onSaved, onCancel }) {
+export function ServiceForm({ service, departments, locationSet, onSaved, onCancel }) {
   const editing = !!service
   const initial = editing ? fromService(service) : EMPTY
   const [f, setF] = useState(initial)
@@ -276,20 +277,30 @@ function ServiceForm({ service, departments, locationSet, onSaved, onCancel }) {
 export default function ServicesTab() {
   const [services, setServices] = useState(null)
   const [departments, setDepartments] = useState([])
-  const [locationSet, setLocationSet] = useState(true)
-  const [editingId, setEditingId] = useState(null)
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState('all')
+  const navigate = useNavigate()
+  const location = useLocation()
 
   const load = useCallback(() => {
+    setError('')
     api('/services').then(setServices).catch((e) => setError(e.message))
   }, [])
   useEffect(load, [load])
   useEffect(() => {
     api('/departments/admin').then(setDepartments).catch(() => {})
-    api('/checkin/church-location')
-      .then((l) => setLocationSet(l.latitude != null))
-      .catch(() => {})
   }, [])
+
+  const visibleServices = useMemo(() => {
+    if (!services) return []
+    const term = query.trim().toLowerCase()
+    return services.filter((s) => {
+      const matchesQuery = !term || `${s.name} ${s.description || ''} ${s.service_type || ''}`.toLowerCase().includes(term)
+      const matchesStatus = status === 'all' || (status === 'active' ? s.is_active : !s.is_active)
+      return matchesQuery && matchesStatus
+    })
+  }, [services, query, status])
 
   const who = (s) => {
     if (!s.department_ids?.length) return 'Open to everyone'
@@ -302,9 +313,7 @@ export default function ServicesTab() {
     try {
       await api(`/services/${s.id}`, { method: 'PATCH', body: { is_active: !s.is_active } })
       load()
-    } catch (e) {
-      setError(e.message)
-    }
+    } catch (e) { setError(e.message) }
   }
 
   async function remove(s) {
@@ -313,66 +322,89 @@ export default function ServicesTab() {
     try {
       await api(`/services/${s.id}`, { method: 'DELETE' })
       load()
-    } catch (e) {
-      setError(e.message) // e.g. it has attendance history: the message says to deactivate instead
-    }
+    } catch (e) { setError(e.message) }
   }
 
-  const when = (s) =>
-    s.is_recurring
-      ? `Every ${DAYS[s.day_of_week]}`
-      : s.first_date && s.last_date && s.first_date !== s.last_date
-        ? `${dayLabelYear(s.first_date)} – ${dayLabelYear(s.last_date)}`
-        : s.first_date
-          ? dayLabelYear(s.first_date)
-          : 'One-off event'
+  const when = (s) => s.is_recurring
+    ? `Every ${DAYS[s.day_of_week]}`
+    : s.first_date && s.last_date && s.first_date !== s.last_date
+      ? `${dayLabelYear(s.first_date)} – ${dayLabelYear(s.last_date)}`
+      : s.first_date ? dayLabelYear(s.first_date) : 'One-off event'
+
+  const activeCount = services?.filter((s) => s.is_active).length || 0
+  const inactiveCount = services?.filter((s) => !s.is_active).length || 0
 
   return (
-    <>
-      <ServiceForm departments={departments} locationSet={locationSet} onSaved={load} />
-      <h2>All services</h2>
-      {error && <p className="error">{error}</p>}
-      {services && services.length === 0 && <p className="card muted">Nothing yet. Create your first service above.</p>}
-      {services && services.length > 0 && (
-        <ul className="card list">
-          {services.map((s) =>
-            editingId === s.id ? (
-              <li key={s.id} className="edit-row">
-                <ServiceForm
-                  service={s}
-                  departments={departments}
-                  locationSet={locationSet}
-                  onSaved={() => {
-                    setEditingId(null)
-                    load()
-                  }}
-                  onCancel={() => setEditingId(null)}
-                />
-              </li>
-            ) : (
-              <li key={s.id} className={s.is_active ? '' : 'inactive'}>
-                <span>
-                  <strong>{s.name}</strong>
-                  <span className="muted">
-                    {' '}· {when(s)} · {s.default_start_time?.slice(0, 5)}
-                    {s.default_end_time ? `–${s.default_end_time.slice(0, 5)}` : ''}
-                    {!s.is_active ? ' · Inactive' : ''}
-                  </span>
-                  <br />
-                  <span className="muted small">{who(s)} · {VERIFY[s.verification_mode] || 'Check-in: off'}</span>
-                </span>
-                <span className="actions">
-                  <button className="btn btn-ghost" onClick={() => setEditingId(s.id)}>Edit</button>
-                  <button className="btn btn-ghost" onClick={() => toggle(s)}>
-                    {s.is_active ? 'Deactivate' : 'Activate'}
-                  </button>
-                  <button className="btn btn-ghost danger-text" onClick={() => remove(s)}>Delete</button>
-                </span>
-              </li>
-            ),
-          )}
-        </ul>
+    <div className="services-manager">
+      {location.state?.notice && <div className="service-notice" role="status">{location.state.notice}</div>}
+      <div className="services-toolbar">
+        <div>
+          <p className="eyebrow">SERVICE DIRECTORY</p>
+          <h2 className="services-title">Your services</h2>
+          <p className="muted">Manage schedules, attendance rules, and which services members can see.</p>
+        </div>
+        <button className="btn btn-primary" onClick={() => navigate('/admin/services/new')}>＋ Create service</button>
+      </div>
+
+      <div className="services-stats">
+        <div className="services-stat"><span className="muted">Total services</span><strong>{services?.length ?? '—'}</strong></div>
+        <div className="services-stat"><span className="muted">Active</span><strong>{services ? activeCount : '—'}</strong></div>
+        <div className="services-stat"><span className="muted">Inactive</span><strong>{services ? inactiveCount : '—'}</strong></div>
+      </div>
+
+      <div className="services-filters">
+        <label className="services-search">Search services
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name or description…" />
+        </label>
+        <label className="services-status-filter">Status
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="all">All services</option>
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+          </select>
+        </label>
+      </div>
+
+      {error && <p className="error service-error" role="alert">{error}</p>}
+      {!services && !error && <div className="card service-loading">Loading services…</div>}
+      {services && services.length === 0 && (
+        <div className="service-empty card">
+          <span className="service-empty-icon">＋</span>
+          <h3>No services yet</h3>
+          <p className="muted">Create your first service to start organizing schedules and attendance.</p>
+          <button className="btn btn-primary" onClick={() => navigate('/admin/services/new')}>Create your first service</button>
+        </div>
       )}
-    </>
+      {services && services.length > 0 && visibleServices.length === 0 && (
+        <div className="service-empty card"><h3>No matching services</h3><p className="muted">Try another search or change the status filter.</p></div>
+      )}
+      {visibleServices.length > 0 && (
+        <div className="services-list">
+          {visibleServices.map((s) => (
+            <article className={`service-management-card${s.is_active ? '' : ' is-inactive'}`} key={s.id}>
+              <div className="service-management-main">
+                <div className="service-card-title-row">
+                  <h3>{s.name}</h3>
+                  <span className={`service-status-pill ${s.is_active ? 'is-active' : 'is-inactive'}`}>{s.is_active ? 'Active' : 'Inactive'}</span>
+                </div>
+                {s.description && <p className="service-description">{s.description}</p>}
+                <div className="service-meta-grid">
+                  <div><span className="service-meta-label">Schedule</span><strong>{when(s)}</strong></div>
+                  <div><span className="service-meta-label">Time</span><strong>{s.default_start_time?.slice(0, 5) || '—'}{s.default_end_time ? ` – ${s.default_end_time.slice(0, 5)}` : ''}</strong></div>
+                  <div><span className="service-meta-label">Type</span><strong>{({ SERVICE: 'Service', MEETING: 'Meeting', EVENT: 'Event' })[s.service_type] || s.service_type}</strong></div>
+                  <div><span className="service-meta-label">Attendance access</span><strong>{who(s)}</strong></div>
+                </div>
+                <p className="service-verification">{VERIFY[s.verification_mode] || 'Check-in: off'}</p>
+              </div>
+              <div className="service-management-actions">
+                <button className="btn btn-primary" onClick={() => navigate(`/admin/services/${s.id}/edit`)}>Edit service</button>
+                <button className="btn btn-ghost" onClick={() => toggle(s)}>{s.is_active ? 'Deactivate' : 'Activate'}</button>
+                <button className="btn btn-ghost danger-text" onClick={() => remove(s)}>Delete</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }

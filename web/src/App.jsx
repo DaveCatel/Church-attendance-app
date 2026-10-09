@@ -10,6 +10,9 @@ import CheckInDisplay from './pages/CheckInDisplay.jsx'
 import Home from './pages/Home.jsx'
 import Profile from './pages/Profile.jsx'
 import Admin from './pages/Admin.jsx'
+import AdminSection from './pages/AdminSection.jsx'
+import ServiceEditor from './pages/admin/ServiceEditor.jsx'
+import DepartmentEditor from './pages/admin/DepartmentEditor.jsx'
 
 function Protected({ adminOnly = false, bare = false }) {
   const { user, ready } = useAuth()
@@ -51,6 +54,11 @@ export default function App() {
       </Route>
       <Route element={<Protected adminOnly />}>
         <Route path="/admin" element={<Admin />} />
+        <Route path="/admin/services/new" element={<ServiceEditor />} />
+        <Route path="/admin/services/:serviceId/edit" element={<ServiceEditor />} />
+        <Route path="/admin/departments/new" element={<DepartmentEditor />} />
+        <Route path="/admin/departments/:departmentId/edit" element={<DepartmentEditor />} />
+        <Route path="/admin/:section" element={<AdminSection />} />
       </Route>
       <Route element={<Protected adminOnly bare />}>
         <Route path="/checkin-display/:occurrenceId" element={<CheckInDisplay />} />
