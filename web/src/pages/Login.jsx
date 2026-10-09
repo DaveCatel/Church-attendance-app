@@ -24,6 +24,7 @@ export default function Login() {
   return (
     <div className="auth-wrap">
       <form className="card auth-card" onSubmit={submit}>
+        <div className="auth-logo" aria-hidden="true">✝</div>
         <h1>Welcome back</h1>
         <p className="muted">Sign in to clock in to a service.</p>
         <label>
@@ -35,11 +36,11 @@ export default function Login() {
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="btn btn-primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-        <p className="muted small">
+        <button className="btn btn-primary btn-big" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+        <p className="muted small" style={{ textAlign: 'center', marginTop: '1rem' }}>
           <Link to="/forgot-password">Forgot your password?</Link>
         </p>
-        <p className="muted small">
+        <p className="muted small" style={{ textAlign: 'center' }}>
           New here? <Link to="/signup">Create an account</Link>
         </p>
       </form>

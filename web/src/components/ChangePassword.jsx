@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
-export default function ChangePassword() {
+export default function ChangePassword({ onDone }) {
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [done, setDone] = useState(false)
   const [busy, setBusy] = useState(false)
+  const closeTimer = useRef(null)
+
+  // don't fire the close callback if the form is unmounted first (e.g. Cancel)
+  useEffect(() => () => clearTimeout(closeTimer.current), [])
 
   async function submit(e) {
     e.preventDefault()
@@ -22,6 +26,8 @@ export default function ChangePassword() {
       setCurrent('')
       setNext('')
       setConfirm('')
+      // leave the success message visible briefly, then let the parent collapse the form
+      if (onDone) closeTimer.current = setTimeout(onDone, 1500)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -47,8 +53,8 @@ export default function ChangePassword() {
         </label>
       </div>
       {error && <p className="error">{error}</p>}
-      {done && <p className="muted">Your password has been changed.</p>}
-      <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Change password'}</button>
+      {done && <p className="success">Your password has been changed.</p>}
+      <button className="btn btn-primary btn-big" disabled={busy || done}>{busy ? 'Saving…' : 'Change password'}</button>
     </form>
   )
 }

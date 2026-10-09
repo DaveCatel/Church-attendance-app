@@ -16,6 +16,7 @@ export default function Profile() {
   const [allDepartments, setAllDepartments] = useState([])
   const [deptError, setDeptError] = useState('')
   const [deptBusy, setDeptBusy] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   useEffect(() => {
     api('/attendance/me').then(setHistory).catch(() => {})
@@ -117,7 +118,24 @@ export default function Profile() {
         <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
       </form>
 
-      <ChangePassword />
+      {showPassword ? (
+        <>
+          <ChangePassword onDone={() => setShowPassword(false)} />
+          <button type="button" className="btn btn-ghost" onClick={() => setShowPassword(false)}>
+            Cancel
+          </button>
+        </>
+      ) : (
+        <section className="card service-head">
+          <div>
+            <h3>Password</h3>
+            <p className="muted small">Change the password you use to sign in.</p>
+          </div>
+          <button type="button" className="btn" onClick={() => setShowPassword(true)}>
+            Change password
+          </button>
+        </section>
+      )}
 
       <h2>My departments</h2>
       {deptError && <p className="error">{deptError}</p>}

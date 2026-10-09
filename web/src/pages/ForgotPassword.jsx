@@ -25,6 +25,12 @@ export default function ForgotPassword() {
   return (
     <div className="auth-wrap">
       <form className="card auth-card" onSubmit={submit}>
+        <div className="auth-logo" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="m3 7 9 6 9-6" />
+          </svg>
+        </div>
         <h1>Forgot your password?</h1>
         {message ? (
           <>
@@ -42,10 +48,10 @@ export default function ForgotPassword() {
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
             </label>
             {error && <p className="error">{error}</p>}
-            <button className="btn btn-primary" disabled={busy}>{busy ? 'Sending…' : 'Send reset link'}</button>
+            <button className="btn btn-primary btn-big" disabled={busy}>{busy ? 'Sending…' : 'Send reset link'}</button>
           </>
         )}
-        <p className="muted small">
+        <p className="muted small" style={{ textAlign: 'center', marginTop: '1rem' }}>
           <Link to="/login">Back to sign in</Link>
         </p>
       </form>

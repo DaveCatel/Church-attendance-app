@@ -121,6 +121,17 @@ button { font-family: inherit; }
   display: block; font-weight: 700; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase;
   margin: .9rem 0; color: var(--text);
 }
+/* hint text sitting inside a label ("At least 8 characters") stays normal-case and light */
+.card label .muted, form label .muted {
+  display: block; margin-top: .3rem; font-weight: 400; text-transform: none; letter-spacing: 0; line-height: 1.4;
+}
+/* NEW: wrapper + title for controls that can't live in a <label> (e.g. the departments dropdown) */
+.field-group { margin: .9rem 0; }
+.label-text {
+  display: block; font-weight: 700; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--text);
+}
+.field-group > .muted { display: block; margin-top: .3rem; }
+
 input, select, textarea {
   display: block; width: 100%; margin-top: .4rem; padding: .85rem .95rem; min-height: 48px;
   border: 1px solid transparent; border-radius: var(--radius-md);
@@ -367,6 +378,33 @@ td.right, th.right { text-align: right; }
 .verse { padding: 1rem; border-radius: var(--radius); background: var(--surface); text-align: center; margin-top: 1rem; }
 .verse cite { display: block; font-style: normal; font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: .35rem; }
 .verse p { font-size: .85rem; font-style: italic; color: #4a4d57; }
+
+/* ---------- NEW: Dropdown (multi-select via <details>), e.g. sign-up departments ---------- */
+.dropdown { position: relative; margin-top: .4rem; }
+.dropdown > summary {
+  list-style: none; display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+  min-height: 48px; padding: .85rem .95rem; border-radius: var(--radius-md);
+  background: var(--surface); border: 1px solid transparent; color: var(--text);
+  font-size: 1rem; font-weight: 500; letter-spacing: 0; text-transform: none; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.dropdown > summary::-webkit-details-marker { display: none; }
+.dropdown > summary .placeholder { color: #a3a6af; font-weight: 400; }
+.dropdown > summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dropdown > summary::after {
+  content: ''; flex: none; width: 16px; height: 16px; transition: transform .15s;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.dropdown[open] > summary { background: #fff; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(10, 10, 10, .08); }
+.dropdown[open] > summary::after { transform: rotate(180deg); }
+.dropdown-panel {
+  position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 15;
+  max-height: 260px; overflow-y: auto; padding: .4rem; display: grid; gap: 2px;
+  background: #fff; border: 1px solid var(--line-strong); border-radius: var(--radius-md); box-shadow: var(--shadow-md);
+}
+.dropdown-panel .check-item { border: 0; border-radius: var(--radius-sm); padding: .7rem .75rem; }
+.dropdown-panel .check-item:hover,
+.dropdown-panel .check-item:has(input:checked) { background: var(--surface); }
 
 /* ---------- Kiosk (projector check-in screen) ---------- */
 .kiosk { min-height: 100vh; min-height: 100dvh; background: #000; color: #fff; padding: 1rem 1rem 2rem; text-align: center; }

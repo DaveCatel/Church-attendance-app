@@ -79,7 +79,7 @@ export default function ServiceCard({ service: s, onChange, autoCode = '' }) {
           <p className="muted">{range}</p>
           {s.description && <p className="small">{s.description}</p>}
         </div>
-        <span className={`badge badge-${s.state}`}>{BADGE[s.state]}</span>
+        <span className={`badge ${s.state === 'upcoming' ? 'badge-outline' : `badge-${s.state}`}`}>{BADGE[s.state]}</span>
       </div>
 
       {s.state === 'open' && !needsCode && (
@@ -128,16 +128,23 @@ export default function ServiceCard({ service: s, onChange, autoCode = '' }) {
 
       {s.state === 'clocked_in' && (
         <>
-          <p className="small">You clocked in at <strong>{time(s.clock_in)}</strong></p>
-          <button className="btn btn-danger btn-big" onClick={clockOut} disabled={busy}>
+          <div className="time-grid">
+            <div className="time-box"><small>Check in</small><strong>{time(s.clock_in)}</strong></div>
+            <div className="time-box pending"><small>Check out</small><strong>--:--</strong></div>
+          </div>
+          <button className="btn btn-big" onClick={clockOut} disabled={busy}>
             {busy ? 'Clocking out…' : 'Clock out'}
           </button>
         </>
       )}
       {s.state === 'completed' && (
-        <p className="small">
-          Thank you for attending. In <strong>{time(s.clock_in)}</strong> · out <strong>{time(s.clock_out)}</strong>
-        </p>
+        <>
+          <div className="time-grid">
+            <div className="time-box"><small>Check in</small><strong>{time(s.clock_in)}</strong></div>
+            <div className="time-box"><small>Check out</small><strong>{time(s.clock_out)}</strong></div>
+          </div>
+          <p className="muted small" style={{ marginTop: '.75rem' }}>Thank you for attending.</p>
+        </>
       )}
       {s.state === 'upcoming' && (
         <button className="btn btn-big" disabled>Clock-in opens at {time(s.opens_at)}</button>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
@@ -10,12 +10,23 @@ export default function Signup() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [loadingDepartments, setLoadingDepartments] = useState(true)
+  const menuRef = useRef(null)
 
   useEffect(() => {
     api('/departments', { noRefresh: true })
       .then(setDepartments)
       .catch((err) => setError(err.message))
       .finally(() => setLoadingDepartments(false))
+  }, [])
+
+  // close the dropdown when tapping anywhere outside it
+  useEffect(() => {
+    function onPointerDown(e) {
+      const el = menuRef.current
+      if (el && el.open && !el.contains(e.target)) el.open = false
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [])
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
@@ -28,6 +39,10 @@ export default function Signup() {
         : [...current.department_ids, id],
     }))
   }
+
+  const selectedNames = departments
+    .filter((department) => form.department_ids.includes(department.id))
+    .map((department) => department.name)
 
   async function submit(e) {
     e.preventDefault()
@@ -57,8 +72,10 @@ export default function Signup() {
           Phone
           <input type="tel" value={form.phone} onChange={set('phone')} autoComplete="tel" placeholder="+237 6XX XXX XXX" required />
         </label>
-        <label>
-          Departments
+
+        {/* A div, not a label: the options inside are labels, and labels must not be nested */}
+        <div className="field-group">
+          <span className="label-text">Departments</span>
           <span className="muted small">
             Optional. Select every department you belong to; an admin will confirm each one.
           </span>
@@ -67,27 +84,41 @@ export default function Signup() {
           ) : departments.length === 0 ? (
             <span className="muted small">No departments have been set up yet. You can ask to join one later from your profile.</span>
           ) : (
-            <div className="check-list">
-              {departments.map((department) => (
-                <label className="check-item" key={department.id}>
-                  <input
-                    type="checkbox"
-                    checked={form.department_ids.includes(department.id)}
-                    onChange={() => toggleDepartment(department.id)}
-                  />
-                  <span>{department.name}</span>
-                </label>
-              ))}
-            </div>
+            <details className="dropdown" ref={menuRef}>
+              <summary>
+                {selectedNames.length === 0 ? (
+                  <span className="placeholder">Select your departments…</span>
+                ) : (
+                  <span>
+                    {selectedNames.length === 1
+                      ? selectedNames[0]
+                      : `${selectedNames.length} departments selected`}
+                  </span>
+                )}
+              </summary>
+              <div className="dropdown-panel">
+                {departments.map((department) => (
+                  <label className="check-item" key={department.id}>
+                    <input
+                      type="checkbox"
+                      checked={form.department_ids.includes(department.id)}
+                      onChange={() => toggleDepartment(department.id)}
+                    />
+                    <span>{department.name}</span>
+                  </label>
+                ))}
+              </div>
+            </details>
           )}
-        </label>
+        </div>
+
         <label>
           Password
           <input type="password" value={form.password} onChange={set('password')} autoComplete="new-password" required minLength={8} />
           <span className="muted small">At least 8 characters</span>
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="btn btn-primary" disabled={busy}>
+        <button className="btn btn-primary btn-big" disabled={busy}>
           {busy ? 'Creating…' : 'Sign up'}
         </button>
         <p className="muted small">
