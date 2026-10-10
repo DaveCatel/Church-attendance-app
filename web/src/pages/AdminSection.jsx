@@ -25,18 +25,31 @@ const sectionInfo = {
 export default function AdminSection() {
   const { section } = useParams()
   const [pending, setPending] = useState([])
+  const [requestsLoading, setRequestsLoading] = useState(true)
+  const [requestsLoadError, setRequestsLoadError] = useState('')
   const [reviewCount, setReviewCount] = useState(0)
   const info = sectionInfo[section]
 
-  const loadPending = useCallback(() => {
-    api('/departments/memberships/pending').then(setPending).catch(() => {})
+  const loadPending = useCallback(async () => {
+    setRequestsLoading(true)
+    try {
+      const result = await api('/departments/memberships/pending')
+      setPending(Array.isArray(result) ? result : [])
+      setRequestsLoadError('')
+      return result
+    } catch (error) {
+      setRequestsLoadError(error.message || 'Could not load department join requests.')
+      throw error
+    } finally {
+      setRequestsLoading(false)
+    }
   }, [])
   const loadReviewCount = useCallback(() => {
     api('/checkin/review/count').then((result) => setReviewCount(result.count || 0)).catch(() => {})
   }, [])
 
   useEffect(() => {
-    loadPending()
+    loadPending().catch(() => {})
     loadReviewCount()
   }, [loadPending, loadReviewCount])
 
@@ -57,7 +70,7 @@ export default function AdminSection() {
       <div className="admin-section-content">
         {section === 'services' && <ServicesTab />}
         {section === 'departments' && <DepartmentsPage />}
-        {section === 'requests' && <RequestsTab requests={pending} onChange={loadPending} />}
+        {section === 'requests' && <RequestsTab requests={pending} onChange={loadPending} loading={requestsLoading} loadError={requestsLoadError} />}
         {section === 'members' && <MembersTab />}
         {section === 'attendance' && <AttendanceTab />}
         {section === 'checkin' && <CheckInTab onChange={loadReviewCount} />}

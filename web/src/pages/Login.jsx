@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
-import logo from '../resources/DC_logo.png'
+import churchLogo from '../images/DC_logo.png'
 
 export default function Login() {
   const { login } = useAuth()
@@ -25,8 +25,11 @@ export default function Login() {
   return (
     <div className="auth-wrap">
       <form className="card auth-card" onSubmit={submit}>
-        <div className="auth-logo" aria-hidden="true">
-          <img src='logo' alt='DC'/>
+        <div className="auth-logo">
+          <img
+            src='{churchLogo}'
+            alt='DC'
+            />
         </div>
         <h1>Welcome back</h1>
         <p className="muted">Sign in to clock in to a service.</p>

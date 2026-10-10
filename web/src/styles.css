@@ -205,6 +205,7 @@ a.btn { text-decoration: none; }
   display: flex; align-items: center; gap: .75rem; margin: 1.1rem 0; color: #a3a6af;
   font-size: .68rem; font-weight: 700; letter-spacing: .1em;
 }
+
 .divider-or::before, .divider-or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 
 /* ---------- Avatars / greeting ---------- */
@@ -603,6 +604,65 @@ td.right, th.right { text-align: right; }
   .entity-card-actions { flex-shrink: 0; border-top: 0; padding-top: 0; }
 }
 
+/* ---------- Join request review workflow ---------- */
+.join-requests-page { min-width: 0; }
+.join-requests-toolbar { display: flex; flex-direction: column; align-items: flex-start; gap: .85rem; margin: .25rem 0 1.1rem; }
+.join-requests-toolbar h2 { margin: .15rem 0 .3rem; font-size: 1.25rem; }
+.join-requests-toolbar p { max-width: 620px; }
+.join-requests-kicker { color: var(--muted); font-size: .68rem; font-weight: 800; letter-spacing: .1em; }
+.join-request-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem; margin-bottom: 1rem; }
+.join-request-stat { min-width: 0; display: flex; flex-direction: column; gap: .15rem; padding: .9rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.join-request-stat-label { color: var(--muted); font-size: .7rem; font-weight: 700; line-height: 1.35; }
+.join-request-stat strong { font-size: 1.55rem; line-height: 1.2; letter-spacing: -.04em; }
+.join-request-filters { display: grid; grid-template-columns: 1fr; gap: .7rem; padding: .9rem; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
+.join-request-filters label { display: flex; flex-direction: column; gap: .35rem; min-width: 0; font-size: .78rem; font-weight: 700; }
+.join-request-filters input, .join-request-filters select { width: 100%; min-width: 0; min-height: 43px; padding: .65rem .75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: white; color: var(--text); font: inherit; font-size: .88rem; }
+.join-request-clear { align-self: end; }
+.join-request-alert { padding: .8rem .95rem; border-radius: var(--radius-md); margin: 0 0 .85rem; font-size: .85rem; }
+.join-request-alert.is-error { border: 1px solid #f5c6c2; background: #fff5f4; color: var(--danger); }
+.join-request-alert.is-success { border: 1px solid #b9e4d5; background: #f0fbf6; color: var(--success); }
+.join-request-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 2.4rem 1.1rem; border: 1px dashed var(--line-strong); border-radius: var(--radius); background: var(--surface); }
+.join-request-empty-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: .75rem; border-radius: 50%; background: white; border: 1px solid var(--line); font-size: 1.25rem; font-weight: 800; }
+.join-request-empty h3 { margin-bottom: .25rem; }
+.join-request-empty p { max-width: 390px; margin-bottom: .85rem; font-size: .88rem; }
+.join-request-list { display: grid; gap: .75rem; }
+.join-request-list-heading { display: flex; justify-content: space-between; align-items: center; gap: .6rem; padding: .1rem .15rem; }
+.join-request-card { display: flex; align-items: flex-start; gap: .8rem; min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: white; box-shadow: var(--shadow-sm); }
+.join-request-person-avatar { flex: 0 0 42px; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: var(--text); color: white; font-size: .8rem; font-weight: 800; }
+.join-request-main { flex: 1; min-width: 0; }
+.join-request-person-heading { display: flex; flex-direction: column; align-items: flex-start; gap: .45rem; }
+.join-request-person-heading h3 { overflow-wrap: anywhere; }
+.join-request-person-heading p { margin-top: .15rem; }
+.join-request-status { display: inline-flex; align-items: center; padding: .25rem .55rem; border-radius: var(--radius-pill); background: #fff7e8; color: #925c08; font-size: .68rem; font-weight: 800; white-space: nowrap; }
+.join-request-department { margin-top: .7rem; font-size: .83rem; color: var(--muted); }
+.join-request-department span { margin-right: .25rem; }
+.join-request-department strong { color: var(--text); }
+.join-request-contact { display: flex; flex-wrap: wrap; gap: .35rem .9rem; margin-top: .6rem; font-size: .8rem; overflow-wrap: anywhere; }
+.join-request-contact a { text-decoration: none; color: var(--text); }
+.join-request-contact a:hover { text-decoration: underline; }
+.join-request-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; padding-top: .85rem; border-top: 1px solid var(--line); }
+.join-request-actions .btn { min-height: 42px; }
+.join-request-reject { border-color: #f0c9c6; color: var(--danger); }
+.join-request-reject:hover:not(:disabled) { background: #fff5f4; }
+.join-request-footnote { margin-top: 1rem; color: var(--muted); font-size: .76rem; line-height: 1.55; }
+@media (min-width: 600px) {
+  .join-requests-toolbar { flex-direction: row; align-items: center; justify-content: space-between; }
+  .join-request-stats { gap: .8rem; }
+  .join-request-stat { padding: 1rem 1.1rem; }
+  .join-request-filters { grid-template-columns: minmax(0, 1fr) 190px 165px auto; align-items: end; }
+  .join-request-person-heading { flex-direction: row; align-items: flex-start; justify-content: space-between; }
+  .join-request-card { padding: 1.15rem; }
+}
+@media (max-width: 380px) {
+  .join-request-stats { gap: .35rem; }
+  .join-request-stat { padding: .65rem .55rem; }
+  .join-request-stat strong { font-size: 1.3rem; }
+  .join-request-stat-label { font-size: .64rem; }
+  .join-request-card { gap: .55rem; padding: .75rem; }
+  .join-request-person-avatar { flex-basis: 34px; width: 34px; height: 34px; font-size: .7rem; }
+}
+
+
 /* ---------- Admin member directory refresh ---------- */
 .members-directory { display: grid; gap: 1rem; min-width: 0; }
 .members-overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
@@ -701,6 +761,7 @@ td.right, th.right { text-align: right; }
   .members-filter-footer { align-items: flex-start; }
   .members-results-heading { align-items: flex-start; }
 }
+
 
 /* ---------- Attendance reporting workspace ---------- */
 .attendance-filters-card { display: grid; gap: 1rem; }
