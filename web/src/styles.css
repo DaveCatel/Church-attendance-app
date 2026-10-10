@@ -201,10 +201,18 @@ a.btn { text-decoration: none; }
 }
 .auth-card h1 { text-align: center; font-size: 1.6rem; }
 .auth-card > .muted { text-align: center; }
+.brf {text-align: center; color: var(--muted);}
 .divider-or { /* NEW: "—— OR ——" */
   display: flex; align-items: center; gap: .75rem; margin: 1.1rem 0; color: #a3a6af;
   font-size: .68rem; font-weight: 700; letter-spacing: .1em;
 }
+
+
+
+.auth-logo img {
+  display: block; width: 50px; height: 50px; object-fit: contain;
+}
+
 
 .divider-or::before, .divider-or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 

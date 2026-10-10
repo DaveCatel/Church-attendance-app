@@ -27,10 +27,15 @@ export default function Login() {
       <form className="card auth-card" onSubmit={submit}>
         <div className="auth-logo">
           <img
-            src='{churchLogo}'
+            src={churchLogo}
             alt='DC'
             />
         </div>
+        <div>
+          <h1>DOMINION CHRURCH</h1>
+          <p className="brf">BELIEVERS ROYAL FAMILY</p>
+        </div>
+        <br />
         <h1>Welcome back</h1>
         <p className="muted">Sign in to clock in to a service.</p>
         <label>
