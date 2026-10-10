@@ -1,6 +1,8 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import Avatar from './Avatar.jsx'
+import churchLogo from '../images/DC_logo0.png'
+
 
 const icon = (children) => (
   <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -19,10 +21,10 @@ export default function Layout({ children }) {
     <>
       <header className="topbar">
         <div className="topbar-inner">
-          <strong className="brand">
-            <span className="brand-mark">BRF</span>
+            <div className="brand-mark">
+              <img src={churchLogo} alt='DC' />
+            </div>
             <span>Attendance</span>
-          </strong>
           <nav>
             <NavLink to="/" end><HomeIcon /><span>Home</span></NavLink>
             <NavLink to="/profile"><UserIcon /><span>Profile</span></NavLink>
